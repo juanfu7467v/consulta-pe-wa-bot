@@ -35,96 +35,238 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// ---------------- Gemini Helper ----------------
+// ---------------- Helpers Gemini ----------------
 const consumirGemini = async (prompt) => {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
     const body = { contents: [{ parts: [{ text: prompt }] }] };
     const r = await axios.post(url, body);
-    return r.data?.candidates?.[0]?.content?.parts?.[0]?.text || "Lo siento, no pude responder.";
+    return r.data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
   } catch (err) {
     console.error("Error Gemini:", err?.response?.data || err.message);
-    return "Ocurrió un error al procesar tu mensaje.";
+    return null;
   }
 };
 
-// ---------------- WhatsApp Session Manager ----------------
+// ---------------- Baileys session manager ----------------
 const sockets = new Map();
+const authCollection = db.collection("wa_auth");
 
-const createAndConnectSocket = async (sessionId = "default") => {
-  if (sockets.has(sessionId)) return sockets.get(sessionId);
+const saveAuthStateToFirestore = async (userId, state) => {
+  await authCollection.doc(userId).set({ state }, { merge: true });
+};
 
-  const { state, saveState } = useSingleFileAuthState(`/tmp/${sessionId}.json`);
+const loadAuthStateFromFirestore = async (userId) => {
+  const doc = await authCollection.doc(userId).get();
+  if (!doc.exists) return null;
+  return doc.data().state || null;
+};
+
+const createAndConnectSocket = async (userId) => {
+  if (sockets.has(userId)) return sockets.get(userId);
+
+  const storedState = await loadAuthStateFromFirestore(userId);
+  const { state, saveState } = useSingleFileAuthState(`/tmp/${userId}.json`);
+
+  if (storedState) {
+    try {
+      const fs = await import("fs");
+      fs.writeFileSync(`/tmp/${userId}.json`, JSON.stringify(storedState));
+    } catch (e) {
+      console.warn("No pude escribir tmp auth file:", e.message);
+    }
+  }
+
   const sock = makeWASocket({ auth: state, printQRInTerminal: false });
 
-  sock.ev.on("creds.update", saveState);
+  sock.ev.on("creds.update", async () => {
+    try {
+      saveState();
+      const fs = await import("fs");
+      const data = fs.readFileSync(`/tmp/${userId}.json`, "utf8");
+      await saveAuthStateToFirestore(userId, JSON.parse(data));
+    } catch (e) {
+      console.error("Error guardando auth state:", e.message);
+    }
+  });
 
-  sock.ev.on("connection.update", async ({ connection, qr }) => {
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
     if (qr) {
       const dataUrl = await qrcode.toDataURL(qr);
-      await db.collection("sessions").doc(sessionId).set({ qr: dataUrl, status: "qr" }, { merge: true });
+      await db
+        .collection("sessions")
+        .doc(userId)
+        .set({ qr: dataUrl, status: "qr" }, { merge: true });
     }
+
     if (connection === "open") {
-      console.log("✅ WhatsApp conectado");
-      await db.collection("sessions").doc(sessionId).set({ qr: null, status: "connected" }, { merge: true });
+      console.log("WhatsApp conectado para", userId);
+      await db
+        .collection("sessions")
+        .doc(userId)
+        .set(
+          {
+            qr: null,
+            status: "connected",
+            connectedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+    }
+
+    if (lastDisconnect?.error) {
+      console.log("Desconectado:", lastDisconnect.error?.message);
+      await db
+        .collection("sessions")
+        .doc(userId)
+        .set(
+          { status: "disconnected", lastDisconnect: JSON.stringify(lastDisconnect) },
+          { merge: true }
+        );
+      if (sockets.has(userId)) {
+        try {
+          sockets.get(userId).end();
+        } catch (e) {}
+        sockets.delete(userId);
+      }
     }
   });
 
   sock.ev.on("messages.upsert", async (m) => {
-    for (const msg of m.messages || []) {
-      if (!msg.message || msg.key.fromMe) continue;
-      const from = msg.key.remoteJid;
-      const text = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
+    try {
+      const messages = m.messages || [];
+      for (const msg of messages) {
+        if (!msg.message || msg.key.fromMe) continue;
+        const from = msg.key.remoteJid;
+        const text =
+          msg.message.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          "";
 
-      const reply = await consumirGemini(text || "Hola 👋");
-      await sock.sendMessage(from, { text: reply });
+        const userDoc = await db.collection("usuarios").doc(userId).get();
+        const user = userDoc.exists ? { id: userDoc.id, ...userDoc.data() } : null;
+        if (!user) return;
 
-      await db.collection("chats").add({
-        from,
-        text,
-        reply,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+        const now = new Date();
+
+        // Validar plan
+        if (user.tipoPlan === "gratis") {
+          const exp = user.expiraSesion ? user.expiraSesion.toDate() : null;
+          if (!exp || now > exp) return;
+        } else if (user.tipoPlan === "creditos") {
+          if (!user.creditos || user.creditos <= 0) return;
+          await db
+            .collection("usuarios")
+            .doc(user.id)
+            .update({ creditos: admin.firestore.FieldValue.increment(-1) });
+        } else if (user.tipoPlan === "ilimitado") {
+          const fechaActivacion = user.fechaActivacion?.toDate?.() || null;
+          if (fechaActivacion) {
+            const duracion = user.duracionDias || 0;
+            const fechaFin = new Date(fechaActivacion);
+            fechaFin.setDate(fechaFin.getDate() + duracion);
+            if (now > fechaFin) return;
+          }
+        }
+
+        const reply = await consumirGemini(text || "Hola");
+        await sock.sendMessage(from, {
+          text: reply || "Lo siento, no pude generar respuesta.",
+        });
+
+        await db
+          .collection("usuarios")
+          .doc(user.id)
+          .collection("chats")
+          .add({
+            from,
+            text,
+            reply,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+      }
+    } catch (e) {
+      console.error("Error procesando mensaje:", e.message);
     }
   });
 
-  sockets.set(sessionId, sock);
+  sockets.set(userId, sock);
   return sock;
 };
 
-// ---------------- API Endpoints ----------------
+// ---------------- API endpoints ----------------
 
-// Inicia sesión automáticamente sin API key
-app.get("/api/connect", async (req, res) => {
+// Registro rápido (sin apiKey)
+app.post("/api/register", async (req, res) => {
   try {
-    const sessionId = "default"; // una sola sesión global
-    await createAndConnectSocket(sessionId);
-    const doc = await db.collection("sessions").doc(sessionId).get();
-    const data = doc.data() || {};
-    res.json({ ok: true, qr: data.qr || null, status: data.status || "esperando QR" });
+    const { email, nombre } = req.body;
+    if (!email) return res.status(400).json({ ok: false, error: "Falta email" });
+
+    const newUserRef = db.collection("usuarios").doc();
+    const usuario = {
+      email,
+      nombre: nombre || null,
+      tipoPlan: "gratis",
+      creditos: 0,
+      expiraSesion: admin.firestore.Timestamp.fromDate(
+        new Date(Date.now() + 6 * 60 * 60 * 1000)
+      ),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await newUserRef.set(usuario);
+    res.json({ ok: true, id: newUserRef.id });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ ok: false, error: "Error al iniciar sesión" });
+    res.status(500).json({ ok: false, error: "Error creando usuario" });
   }
 });
 
-// Página principal: muestra QR directamente
-app.get("/", async (req, res) => {
-  const doc = await db.collection("sessions").doc("default").get();
-  const data = doc.data() || {};
-  if (data.qr) {
-    res.send(`
-      <h1>Conectar WhatsApp - Consulta PE</h1>
-      <p>Escanea este código QR con tu WhatsApp:</p>
-      <img src="${data.qr}" width="300"/>
-    `);
-  } else {
-    res.send(`
-      <h1>Conectar WhatsApp - Consulta PE</h1>
-      <p>Estado: ${data.status || "Desconectado"}</p>
-    `);
+// Crear sesión directamente (sin apiKey)
+app.post("/api/session/create", async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ ok: false, error: "Falta userId" });
+
+    const userDoc = await db.collection("usuarios").doc(userId).get();
+    if (!userDoc.exists) return res.status(404).json({ ok: false, error: "Usuario no encontrado" });
+
+    await db
+      .collection("sessions")
+      .doc(userId)
+      .set(
+        { ownerId: userId, status: "starting", createdAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+
+    await createAndConnectSocket(userId);
+
+    res.json({ ok: true, sessionId: userId });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "Error creando sesión" });
   }
 });
+
+app.get("/api/session/qr", async (req, res) => {
+  try {
+    const { sessionId } = req.query;
+    if (!sessionId) return res.status(400).json({ ok: false, error: "Falta sessionId" });
+
+    const doc = await db.collection("sessions").doc(sessionId).get();
+    if (!doc.exists) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+
+    const data = doc.data();
+    res.json({ ok: true, qr: data.qr || null, status: data.status || "unknown" });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: "Error al obtener QR" });
+  }
+});
+
+app.get("/", (req, res) =>
+  res.json({ ok: true, mensaje: "Consulta PE - Wilderbot backend sin apiKey" })
+);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server corriendo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
