@@ -1,5 +1,5 @@
 {
-  "name": "consulta-pe-wilderbot-backend",
+  "name": "consulta-pe-wilderbot-completo",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -7,13 +7,13 @@
     "dev": "nodemon server.mjs"
   },
   "dependencies": {
+    "@adiwajshing/baileys": "^4.6.0",
     "axios": "^1.4.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
-    "firebase-admin": "^11.11.0"
+    "firebase-admin": "^11.11.0",
+    "qrcode": "^1.5.1"
   },
-  "engines": {
-    "node": "18.x"
-  }
+  "engines": { "node": "18.x" }
 }
