@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Consulta PE - Conectar WhatsApp</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+    .card{max-width:720px;margin:10px auto;padding:20px;border-radius:8px;border:1px solid #eee}
+    img.qr{max-width:320px}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Conectar WhatsApp - Consulta PE</h2>
+    <p>Ingresa tu API key (la obtienes al registrarte) y presiona "Crear sesión". Escanea el QR con WhatsApp.</p>
+
+    <label>API Key</label><br>
+    <input id="apikey" style="width:100%;padding:8px" placeholder="Api key..." />
+    <div style="margin-top:10px">
+      <button onclick="createSession()">Crear sesión y obtener QR</button>
+    </div>
+
+    <div id="qrbox" class="hidden" style="margin-top:20px">
+      <h3>Escanea este QR con WhatsApp</h3>
+      <img id="qrimg" class="qr" src="" alt="QR" />
+      <p id="status">Esperando escaneo...</p>
+    </div>
+  </div>
+
+<script>
+  let sessionId = null;
+  async function createSession(){
+    const apiKey = document.getElementById('apikey').value.trim();
+    if(!apiKey){alert('Ingresa apiKey');return}
+    const res = await fetch('/api/session/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apiKey})});
+    const data = await res.json();
+    if(!data.ok){alert(data.error||'Error');return}
+    sessionId = data.sessionId;
+    document.getElementById('qrbox').classList.remove('hidden');
+    pollQR();
+  }
+
+  async function pollQR(){
+    if(!sessionId) return;
+    const res = await fetch(`/api/session/qr?sessionId=${sessionId}`);
+    const data = await res.json();
+    if(data.ok){
+      if(data.qr){ document.getElementById('qrimg').src = data.qr; document.getElementById('status').innerText = 'Escanea el QR'; }
+      else if(data.status === 'connected'){ document.getElementById('status').innerText = 'Conectado! Abre la sección de configuración.'; }
+      else document.getElementById('status').innerText = 'Estado: ' + data.status;
+    }
+    setTimeout(pollQR, 3000);
+  }
+</script>
+</body>
+</html>
