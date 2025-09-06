@@ -1,0 +1,17 @@
+{
+  "name": "consulta-pe-api",
+  "version": "1.0.0",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "firebase-admin": "^12.5.0",
+    "axios": "^1.7.7"
+  }
+}
