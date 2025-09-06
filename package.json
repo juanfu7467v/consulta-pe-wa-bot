@@ -9,7 +9,7 @@
     "dev": "nodemon server.mjs"
   },
   "dependencies": {
-    "@adiwajshing/baileys": "^6.7.8",
+    "@adiwajshing/baileys": "^6.7.7",
     "axios": "^1.7.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
