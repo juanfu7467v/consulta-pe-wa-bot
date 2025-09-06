@@ -1,0 +1,18 @@
+{
+  "name": "consulta-pe-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@adiwajshing/baileys": "^6.7.7",
+    "axios": "^1.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.19.2",
+    "firebase-admin": "^11.10.1",
+    "qrcode": "^1.5.3"
+  }
+}
