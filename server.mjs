@@ -5,22 +5,12 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
-import makeWASocket, { useSingleFileAuthState } from "@adiwajshing/baileys";
-import { fileURLToPath } from 'url';
-import path from 'path';
+import makeWASocket, {
+  useSingleFileAuthState,
+  DisconnectReason
+} from "@whiskeysockets/baileys";
 
 dotenv.config();
-
-// ---------------- Directorio para archivos temporales ----------------
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const tempDir = path.join(__dirname, 'tmp');
-import fs from 'fs';
-
-if (!fs.existsSync(tempDir)) {
-  fs.mkdirSync(tempDir);
-}
-// --------------------------------------------------------------------
 
 const app = express();
 app.use(express.json());
@@ -38,9 +28,10 @@ const serviceAccount = {
   client_id: process.env.FIREBASE_CLIENT_ID,
   auth_uri: process.env.FIREBASE_AUTH_URI,
   token_uri: process.env.FIREBASE_TOKEN_URI,
-  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+  auth_provider_x509_cert_url:
+    process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
   client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
-  universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+  universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN
 };
 
 if (!admin.apps.length) {
@@ -78,23 +69,41 @@ const loadAuthStateFromFirestore = async (userId) => {
 const createAndConnectSocket = async (userId) => {
   if (sockets.has(userId)) return sockets.get(userId);
 
-  const authFilepath = path.join(tempDir, `${userId}.json`);
   const storedState = await loadAuthStateFromFirestore(userId);
+  const { state, saveState } = await useSingleFileAuthState(`/tmp/${userId}.json`);
 
   if (storedState) {
-    fs.writeFileSync(authFilepath, JSON.stringify(storedState));
-  } else if (!fs.existsSync(authFilepath)) {
-    fs.writeFileSync(authFilepath, JSON.stringify({}));
+    try {
+      const fs = await import("fs");
+      fs.writeFileSync(`/tmp/${userId}.json`, JSON.stringify(storedState));
+    } catch (e) {
+      console.warn("No pude escribir tmp auth file:", e?.message);
+    }
   }
 
-  const { state, saveState } = useSingleFileAuthState(authFilepath);
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: false,
+    markOnlineOnConnect: false // evita estar "en línea"
+  });
 
-  const sock = makeWASocket({ auth: state, printQRInTerminal: false });
+  // 🔴 Rechazar llamadas entrantes
+  sock.ev.on("call", async (calls) => {
+    for (const call of calls) {
+      if (call.isGroup) continue;
+      await sock.rejectCall(call.id, call.from);
+      console.log("Llamada rechazada de:", call.from);
+      await sock.sendMessage(call.from, {
+        text: "📵 Lo siento, no acepto llamadas en este número."
+      });
+    }
+  });
 
   sock.ev.on("creds.update", async () => {
     try {
-      await saveState(); 
-      const data = fs.readFileSync(authFilepath, "utf8");
+      await saveState();
+      const fs = await import("fs");
+      const data = fs.readFileSync(`/tmp/${userId}.json`, "utf8");
       await saveAuthStateToFirestore(userId, JSON.parse(data));
     } catch (e) {
       console.error("Error guardando auth state:", e?.message);
@@ -110,66 +119,54 @@ const createAndConnectSocket = async (userId) => {
 
     if (connection === "open") {
       console.log("WhatsApp conectado para", userId);
-      await db
-        .collection("sessions")
-        .doc(userId)
-        .set({ qr: null, status: "connected", connectedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      await db.collection("sessions").doc(userId).set({
+        qr: null,
+        status: "connected",
+        connectedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
     }
 
-    if (lastDisconnect?.error) {
-      console.log("Desconectado:", lastDisconnect.error?.message || lastDisconnect.error);
-      await db
-        .collection("sessions")
-        .doc(userId)
-        .set({ status: "disconnected", lastDisconnect: JSON.stringify(lastDisconnect) }, { merge: true });
-
-      if (sockets.has(userId)) {
-        try {
-          sockets.get(userId).end();
-        } catch (e) {}
-        sockets.delete(userId);
+    if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      if (reason !== DisconnectReason.loggedOut) {
+        console.log("Reconectando...");
+        createAndConnectSocket(userId);
+      } else {
+        console.log("Sesión cerrada para:", userId);
       }
     }
   });
 
+  // 🔊 Mensajes entrantes
   sock.ev.on("messages.upsert", async (m) => {
     try {
       const messages = m.messages || [];
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
         const from = msg.key.remoteJid;
-        const text = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
+        const text =
+          msg.message.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          "";
 
-        const userDoc = await db.collection("usuarios").doc(userId).get();
-        const user = userDoc.exists ? { id: userDoc.id, ...userDoc.data() } : null;
-        if (!user) return;
-
-        const now = new Date();
-
-        if (user.tipoPlan === "gratis") {
-          const exp = user.expiraSesion ? user.expiraSesion.toDate() : null;
-          if (!exp || now > exp) return;
-        } else if (user.tipoPlan === "creditos") {
-          if (!user.creditos || user.creditos <= 0) return;
-          await db.collection("usuarios").doc(user.id).update({ creditos: admin.firestore.FieldValue.increment(-1) });
-        } else if (user.tipoPlan === "ilimitado") {
-          const fechaActivacion = user.fechaActivacion?.toDate?.() || null;
-          if (fechaActivacion) {
-            const duracion = user.duracionDias || 0;
-            const fechaFin = new Date(fechaActivacion);
-            fechaFin.setDate(fechaFin.getDate() + duracion);
-            if (now > fechaFin) return;
-          }
-        }
+        console.log("Mensaje recibido:", text);
 
         const reply = await consumirGemini(text || "Hola");
-        await sock.sendMessage(from, { text: reply || "Lo siento, no pude generar respuesta." });
 
-        await db
-          .collection("usuarios")
-          .doc(user.id)
-          .collection("chats")
-          .add({ from, text, reply, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+        // responder con texto
+        await sock.sendMessage(from, { text: reply || "🤖 No entendí tu mensaje." });
+
+        // ejemplo: responder con audio (tts fake usando voz WhatsApp, solo texto → audio fake)
+        // si no lo necesitas, comenta estas 2 líneas
+        await sock.sendMessage(from, { audio: { url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" }, mimetype: "audio/mpeg", ptt: true });
+
+        // guardar en Firestore
+        await db.collection("usuarios").doc(userId).collection("chats").add({
+          from,
+          text,
+          reply,
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
       }
     } catch (e) {
       console.error("Error procesando mensaje:", e?.message || e);
@@ -182,15 +179,8 @@ const createAndConnectSocket = async (userId) => {
 
 // ---------------- API endpoints ----------------
 
-const validateApiKey = (req, res, next) => {
-  const apiKey = req.headers["x-api-key"];
-  if (!apiKey || apiKey !== process.env.MASTER_API_KEY) {
-    return res.status(403).json({ ok: false, error: "Acceso denegado" });
-  }
-  next();
-};
-
-app.post("/api/register", validateApiKey, async (req, res) => {
+// Registro rápido (cualquiera puede hacerlo)
+app.post("/api/register", async (req, res) => {
   try {
     const { email, nombre } = req.body;
     if (!email) return res.status(400).json({ ok: false, error: "Falta email" });
@@ -201,18 +191,21 @@ app.post("/api/register", validateApiKey, async (req, res) => {
       nombre: nombre || null,
       tipoPlan: "gratis",
       creditos: 0,
-      expiraSesion: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 6 * 60 * 60 * 1000)),
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiraSesion: admin.firestore.Timestamp.fromDate(
+        new Date(Date.now() + 6 * 60 * 60 * 1000)
+      ),
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
     };
     await newUserRef.set(usuario);
     res.json({ ok: true, id: newUserRef.id });
   } catch (e) {
-      console.error(e);
-      res.status(500).json({ ok: false, error: "Error creando usuario" });
+    console.error(e);
+    res.status(500).json({ ok: false, error: "Error creando usuario" });
   }
 });
 
-app.post("/api/session/create", validateApiKey, async (req, res) => {
+// Crear sesión sin API Key
+app.post("/api/session/create", async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ ok: false, error: "Falta userId" });
@@ -220,7 +213,11 @@ app.post("/api/session/create", validateApiKey, async (req, res) => {
     const userDoc = await db.collection("usuarios").doc(userId).get();
     if (!userDoc.exists) return res.status(404).json({ ok: false, error: "Usuario no encontrado" });
 
-    await db.collection("sessions").doc(userId).set({ ownerId: userId, status: "starting", createdAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    await db.collection("sessions").doc(userId).set({
+      ownerId: userId,
+      status: "starting",
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
 
     await createAndConnectSocket(userId);
 
@@ -231,7 +228,8 @@ app.post("/api/session/create", validateApiKey, async (req, res) => {
   }
 });
 
-app.get("/api/session/qr", validateApiKey, async (req, res) => {
+// Obtener QR
+app.get("/api/session/qr", async (req, res) => {
   try {
     const { sessionId } = req.query;
     if (!sessionId) return res.status(400).json({ ok: false, error: "Falta sessionId" });
@@ -247,8 +245,9 @@ app.get("/api/session/qr", validateApiKey, async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.json({ ok: true, mensaje: "Consulta PE - Wilderbot backend (protegido)" }));
+app.get("/", (req, res) =>
+  res.json({ ok: true, mensaje: "Consulta PE - Wilderbot backend público" })
+);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
-
