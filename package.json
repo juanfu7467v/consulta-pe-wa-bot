@@ -1,27 +1,20 @@
 {
   "name": "consulta-pe-backend",
   "version": "1.0.0",
-  "description": "Backend Consulta PE - WhatsApp + Gemini",
+  "description": "Backend para Consultas PE",
   "main": "server.mjs",
   "type": "module",
   "scripts": {
-    "start": "node server.mjs",
-    "dev": "nodemon server.mjs"
+    "start": "node server.mjs"
   },
   "dependencies": {
-    "axios": "^1.7.7",
+    "@adiwajshing/baileys": "^6.5.0",
+    "@adiwajshing/keyed-db": "^0.2.4",
+    "axios": "^1.6.8",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "firebase-admin": "^12.6.0",
-    "qrcode": "^1.5.4",
-    "baileys": "^6.7.18"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.4"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "license": "MIT"
+    "firebase-admin": "^12.1.0",
+    "qrcode": "^1.5.3"
+  }
 }
