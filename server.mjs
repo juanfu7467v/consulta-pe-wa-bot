@@ -5,10 +5,15 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
-import makeWASocket, {
+
+// 👇 Importar Baileys correctamente (CommonJS -> ESM)
+import baileys from "@whiskeysockets/baileys";
+const {
+  default: makeWASocket,
   useSingleFileAuthState,
-  DisconnectReason
-} from "@whiskeysockets/baileys";
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} = baileys;
 
 dotenv.config();
 
@@ -70,7 +75,7 @@ const createAndConnectSocket = async (userId) => {
   if (sockets.has(userId)) return sockets.get(userId);
 
   const storedState = await loadAuthStateFromFirestore(userId);
-  const { state, saveState } = await useSingleFileAuthState(`/tmp/${userId}.json`);
+  const { state, saveState } = useSingleFileAuthState(`/tmp/${userId}.json`);
 
   if (storedState) {
     try {
@@ -84,10 +89,10 @@ const createAndConnectSocket = async (userId) => {
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    markOnlineOnConnect: false // evita estar "en línea"
+    markOnlineOnConnect: false
   });
 
-  // 🔴 Rechazar llamadas entrantes
+  // 🔴 Rechazar llamadas
   sock.ev.on("call", async (calls) => {
     for (const call of calls) {
       if (call.isGroup) continue;
@@ -114,16 +119,22 @@ const createAndConnectSocket = async (userId) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
       const dataUrl = await qrcode.toDataURL(qr);
-      await db.collection("sessions").doc(userId).set({ qr: dataUrl, status: "qr" }, { merge: true });
+      await db.collection("sessions").doc(userId).set(
+        { qr: dataUrl, status: "qr" },
+        { merge: true }
+      );
     }
 
     if (connection === "open") {
       console.log("WhatsApp conectado para", userId);
-      await db.collection("sessions").doc(userId).set({
-        qr: null,
-        status: "connected",
-        connectedAt: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+      await db.collection("sessions").doc(userId).set(
+        {
+          qr: null,
+          status: "connected",
+          connectedAt: admin.firestore.FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
     }
 
     if (connection === "close") {
@@ -137,7 +148,7 @@ const createAndConnectSocket = async (userId) => {
     }
   });
 
-  // 🔊 Mensajes entrantes
+  // 🔊 Mensajes
   sock.ev.on("messages.upsert", async (m) => {
     try {
       const messages = m.messages || [];
@@ -152,21 +163,27 @@ const createAndConnectSocket = async (userId) => {
         console.log("Mensaje recibido:", text);
 
         const reply = await consumirGemini(text || "Hola");
-
-        // responder con texto
         await sock.sendMessage(from, { text: reply || "🤖 No entendí tu mensaje." });
 
-        // ejemplo: responder con audio (tts fake usando voz WhatsApp, solo texto → audio fake)
-        // si no lo necesitas, comenta estas 2 líneas
-        await sock.sendMessage(from, { audio: { url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" }, mimetype: "audio/mpeg", ptt: true });
-
-        // guardar en Firestore
-        await db.collection("usuarios").doc(userId).collection("chats").add({
-          from,
-          text,
-          reply,
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        // ejemplo: respuesta con audio (fake tts)
+        await sock.sendMessage(from, {
+          audio: {
+            url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+          },
+          mimetype: "audio/mpeg",
+          ptt: true
         });
+
+        await db
+          .collection("usuarios")
+          .doc(userId)
+          .collection("chats")
+          .add({
+            from,
+            text,
+            reply,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
       }
     } catch (e) {
       console.error("Error procesando mensaje:", e?.message || e);
@@ -178,8 +195,6 @@ const createAndConnectSocket = async (userId) => {
 };
 
 // ---------------- API endpoints ----------------
-
-// Registro rápido (cualquiera puede hacerlo)
 app.post("/api/register", async (req, res) => {
   try {
     const { email, nombre } = req.body;
@@ -204,20 +219,26 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// Crear sesión sin API Key
 app.post("/api/session/create", async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ ok: false, error: "Falta userId" });
 
     const userDoc = await db.collection("usuarios").doc(userId).get();
-    if (!userDoc.exists) return res.status(404).json({ ok: false, error: "Usuario no encontrado" });
+    if (!userDoc.exists)
+      return res.status(404).json({ ok: false, error: "Usuario no encontrado" });
 
-    await db.collection("sessions").doc(userId).set({
-      ownerId: userId,
-      status: "starting",
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    await db
+      .collection("sessions")
+      .doc(userId)
+      .set(
+        {
+          ownerId: userId,
+          status: "starting",
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
 
     await createAndConnectSocket(userId);
 
@@ -228,17 +249,22 @@ app.post("/api/session/create", async (req, res) => {
   }
 });
 
-// Obtener QR
 app.get("/api/session/qr", async (req, res) => {
   try {
     const { sessionId } = req.query;
-    if (!sessionId) return res.status(400).json({ ok: false, error: "Falta sessionId" });
+    if (!sessionId)
+      return res.status(400).json({ ok: false, error: "Falta sessionId" });
 
     const doc = await db.collection("sessions").doc(sessionId).get();
-    if (!doc.exists) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+    if (!doc.exists)
+      return res.status(404).json({ ok: false, error: "Session no encontrada" });
 
     const data = doc.data();
-    res.json({ ok: true, qr: data.qr || null, status: data.status || "unknown" });
+    res.json({
+      ok: true,
+      qr: data.qr || null,
+      status: data.status || "unknown"
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: "Error al obtener QR" });
