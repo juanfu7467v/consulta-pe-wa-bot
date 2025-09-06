@@ -5,8 +5,7 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
-import { default as makeWASocket, useSingleFileAuthState } from "@adiwajshing/baileys";
-
+import makeWASocket, { useSingleFileAuthState } from "@whiskeysockets/baileys";
 dotenv.config();
 
 const app = express();
