@@ -5,9 +5,22 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
-import makeWASocket, { useSingleFileAuthState } from "baileys";
+import makeWASocket, { useSingleFileAuthState } from "@adiwajshing/baileys";
+import { fileURLToPath } from 'url';
+import path from 'path';
 
 dotenv.config();
+
+// ---------------- Directorio para archivos temporales ----------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const tempDir = path.join(__dirname, 'tmp');
+import fs from 'fs';
+
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir);
+}
+// --------------------------------------------------------------------
 
 const app = express();
 app.use(express.json());
@@ -65,31 +78,23 @@ const loadAuthStateFromFirestore = async (userId) => {
 const createAndConnectSocket = async (userId) => {
   if (sockets.has(userId)) return sockets.get(userId);
 
-  // Cargar estado guardado de Firestore (si existe)
+  const authFilepath = path.join(tempDir, `${userId}.json`);
   const storedState = await loadAuthStateFromFirestore(userId);
 
-  // useSingleFileAuthState es async en las versiones recientes -> await
-  const { state, saveState } = await useSingleFileAuthState(`/tmp/${userId}.json`);
-
-  // Si Firestore tiene estado, sobreescribir archivo temporal
   if (storedState) {
-    try {
-      const fs = await import("fs");
-      fs.writeFileSync(`/tmp/${userId}.json`, JSON.stringify(storedState));
-    } catch (e) {
-      console.warn("No pude escribir tmp auth file:", e?.message);
-    }
+    fs.writeFileSync(authFilepath, JSON.stringify(storedState));
+  } else if (!fs.existsSync(authFilepath)) {
+    fs.writeFileSync(authFilepath, JSON.stringify({}));
   }
 
-  // Crear socket con el estado
+  const { state, saveState } = useSingleFileAuthState(authFilepath);
+
   const sock = makeWASocket({ auth: state, printQRInTerminal: false });
 
-  // Cuando las credenciales cambian, guarda estado local y sube a Firestore
   sock.ev.on("creds.update", async () => {
     try {
-      await saveState(); // puede ser async
-      const fs = await import("fs");
-      const data = fs.readFileSync(`/tmp/${userId}.json`, "utf8");
+      await saveState(); 
+      const data = fs.readFileSync(authFilepath, "utf8");
       await saveAuthStateToFirestore(userId, JSON.parse(data));
     } catch (e) {
       console.error("Error guardando auth state:", e?.message);
@@ -127,7 +132,6 @@ const createAndConnectSocket = async (userId) => {
     }
   });
 
-  // Mensajes entrantes
   sock.ev.on("messages.upsert", async (m) => {
     try {
       const messages = m.messages || [];
@@ -136,14 +140,12 @@ const createAndConnectSocket = async (userId) => {
         const from = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
 
-        // Obtenemos el usuario propietario de esta sesión
         const userDoc = await db.collection("usuarios").doc(userId).get();
         const user = userDoc.exists ? { id: userDoc.id, ...userDoc.data() } : null;
         if (!user) return;
 
         const now = new Date();
 
-        // Validar plan
         if (user.tipoPlan === "gratis") {
           const exp = user.expiraSesion ? user.expiraSesion.toDate() : null;
           if (!exp || now > exp) return;
@@ -180,7 +182,6 @@ const createAndConnectSocket = async (userId) => {
 
 // ---------------- API endpoints ----------------
 
-// Middleware para validar MASTER_API_KEY (header x-api-key)
 const validateApiKey = (req, res, next) => {
   const apiKey = req.headers["x-api-key"];
   if (!apiKey || apiKey !== process.env.MASTER_API_KEY) {
@@ -189,7 +190,6 @@ const validateApiKey = (req, res, next) => {
   next();
 };
 
-// Registro rápido (requiere API Key)
 app.post("/api/register", validateApiKey, async (req, res) => {
   try {
     const { email, nombre } = req.body;
@@ -207,12 +207,11 @@ app.post("/api/register", validateApiKey, async (req, res) => {
     await newUserRef.set(usuario);
     res.json({ ok: true, id: newUserRef.id });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "Error creando usuario" });
+      console.error(e);
+      res.status(500).json({ ok: false, error: "Error creando usuario" });
   }
 });
 
-// Crear sesión (requiere API Key)
 app.post("/api/session/create", validateApiKey, async (req, res) => {
   try {
     const { userId } = req.body;
@@ -252,3 +251,4 @@ app.get("/", (req, res) => res.json({ ok: true, mensaje: "Consulta PE - Wilderbo
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
+
