@@ -1,3 +1,4 @@
+// server.mjs
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9,8 +10,7 @@ import path from "path";
 dotenv.config();
 
 const app = express();
-app.use(express.json());
-app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
+app.use(cors({ origin: "*" }));
 
 const sessions = new Map();
 
@@ -43,11 +43,11 @@ try {
 const createAndConnectSocket = async (sessionId) => {
   if (!makeWASocket) throw new Error("Baileys no disponible");
 
-  // Carpeta para sesiones
   const sessionDir = path.join("/tmp/sessions", sessionId);
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
@@ -56,26 +56,27 @@ const createAndConnectSocket = async (sessionId) => {
 
   sessions.set(sessionId, { sock, status: "starting", qr: null });
 
-  // Guardar creds SOLO cuando ya está conectado
+  // Guardar solo cuando la sesión está abierta
   sock.ev.on("creds.update", async () => {
-    if (sessions.get(sessionId)?.status === "connected") {
-      await saveCreds();
-    }
+    if (sessions.get(sessionId)?.status === "connected") await saveCreds();
   });
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
+
     if (qr) {
       const dataUrl = await qrcode.toDataURL(qr);
       sessions.get(sessionId).qr = dataUrl;
       sessions.get(sessionId).status = "qr";
     }
+
     if (connection === "open") {
       sessions.get(sessionId).qr = null;
       sessions.get(sessionId).status = "connected";
       console.log("✅ WhatsApp conectado:", sessionId);
-      await saveCreds(); // ahora sí guardar
+      await saveCreds();
     }
+
     if (connection === "close") {
       const reason = lastDisconnect?.error?.output?.statusCode;
       sessions.get(sessionId).status = "disconnected";
@@ -86,15 +87,12 @@ const createAndConnectSocket = async (sessionId) => {
     }
   });
 
-  // Responder mensajes entrantes con Gemini
   sock.ev.on("messages.upsert", async (m) => {
     for (const msg of m.messages || []) {
       if (!msg.message || msg.key.fromMe) continue;
       const from = msg.key.remoteJid;
       const body = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
       if (!body) continue;
-
-      console.log("📩", from, ":", body);
       const reply = await consumirGemini(body) || "Hola, gracias por tu mensaje.";
       await sock.sendMessage(from, { text: reply });
     }
@@ -103,14 +101,12 @@ const createAndConnectSocket = async (sessionId) => {
   return sock;
 };
 
-/* ---------------- Endpoints ---------------- */
+/* ---------------- Endpoints GET ---------------- */
 
 // Crear sesión
 app.get("/api/session/create", async (req, res) => {
   const sessionId = req.query.sessionId || `session_${Date.now()}`;
-  if (!sessions.has(sessionId)) {
-    await createAndConnectSocket(sessionId);
-  }
+  if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
   res.json({ ok: true, sessionId });
 });
 
@@ -123,22 +119,20 @@ app.get("/api/session/qr", (req, res) => {
 });
 
 // Enviar mensaje
-app.post("/api/session/send", async (req, res) => {
-  const { sessionId, to, text } = req.body;
+app.get("/api/session/send", async (req, res) => {
+  const { sessionId, to, text } = req.query;
   const s = sessions.get(sessionId);
   if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
   await s.sock.sendMessage(to, { text });
-  res.json({ ok: true });
+  res.json({ ok: true, message: "Mensaje enviado ✅" });
 });
 
-// Resetear sesión (forzar nuevo QR)
-app.post("/api/session/reset", async (req, res) => {
-  const { sessionId } = req.body;
+// Resetear sesión (nuevo QR)
+app.get("/api/session/reset", async (req, res) => {
+  const { sessionId } = req.query;
   const sessionDir = path.join("/tmp/sessions", sessionId);
   try {
-    if (fs.existsSync(sessionDir)) {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
+    if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
     sessions.delete(sessionId);
     res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
   } catch (err) {
