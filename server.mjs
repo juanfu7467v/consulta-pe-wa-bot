@@ -167,7 +167,7 @@ const createAndConnectSocket = async (userId) => {
         });
 
         await db
-          .collection("usuarios")
+          .collection("mensajes")
           .doc(userId)
           .collection("chats")
           .add({
@@ -187,25 +187,15 @@ const createAndConnectSocket = async (userId) => {
 };
 
 // ---------------- API endpoints ----------------
-// ✅ Sesión con API Key en headers
+// ✅ Crear sesión sin token, solo con número/nombre de usuario
 app.post("/api/session/create", async (req, res) => {
   try {
-    const token = req.headers["x-api-key"];
-    if (!token)
-      return res.status(400).json({ ok: false, error: "Token requerido" });
-
-    const snapshot = await db
-      .collection("usuarios")
-      .where("apiKey", "==", token)
-      .limit(1)
-      .get();
-
-    if (snapshot.empty) {
-      return res.status(401).json({ ok: false, error: "Token inválido" });
+    const { userId } = req.body;
+    if (!userId) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "Falta userId (ej: tu número o alias)" });
     }
-
-    const userDoc = snapshot.docs[0];
-    const userId = userDoc.id;
 
     await db
       .collection("sessions")
