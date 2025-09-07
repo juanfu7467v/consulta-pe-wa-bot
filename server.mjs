@@ -12,7 +12,6 @@ const {
   default: makeWASocket,
   useSingleFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
 } = baileys;
 
 dotenv.config();
@@ -36,7 +35,7 @@ const serviceAccount = {
   auth_provider_x509_cert_url:
     process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
   client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
-  universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN
+  universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
 };
 
 if (!admin.apps.length) {
@@ -89,7 +88,7 @@ const createAndConnectSocket = async (userId) => {
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    markOnlineOnConnect: false
+    markOnlineOnConnect: false,
   });
 
   // 🔴 Rechazar llamadas
@@ -99,7 +98,7 @@ const createAndConnectSocket = async (userId) => {
       await sock.rejectCall(call.id, call.from);
       console.log("Llamada rechazada de:", call.from);
       await sock.sendMessage(call.from, {
-        text: "📵 Lo siento, no acepto llamadas en este número."
+        text: "📵 Lo siento, no acepto llamadas en este número.",
       });
     }
   });
@@ -131,7 +130,7 @@ const createAndConnectSocket = async (userId) => {
         {
           qr: null,
           status: "connected",
-          connectedAt: admin.firestore.FieldValue.serverTimestamp()
+          connectedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -163,15 +162,8 @@ const createAndConnectSocket = async (userId) => {
         console.log("Mensaje recibido:", text);
 
         const reply = await consumirGemini(text || "Hola");
-        await sock.sendMessage(from, { text: reply || "🤖 No entendí tu mensaje." });
-
-        // ejemplo: respuesta con audio (fake tts)
         await sock.sendMessage(from, {
-          audio: {
-            url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-          },
-          mimetype: "audio/mpeg",
-          ptt: true
+          text: reply || "🤖 No entendí tu mensaje.",
         });
 
         await db
@@ -182,7 +174,7 @@ const createAndConnectSocket = async (userId) => {
             from,
             text,
             reply,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
           });
       }
     } catch (e) {
@@ -195,38 +187,25 @@ const createAndConnectSocket = async (userId) => {
 };
 
 // ---------------- API endpoints ----------------
-app.post("/api/register", async (req, res) => {
-  try {
-    const { email, nombre } = req.body;
-    if (!email) return res.status(400).json({ ok: false, error: "Falta email" });
-
-    const newUserRef = db.collection("usuarios").doc();
-    const usuario = {
-      email,
-      nombre: nombre || null,
-      tipoPlan: "gratis",
-      creditos: 0,
-      expiraSesion: admin.firestore.Timestamp.fromDate(
-        new Date(Date.now() + 6 * 60 * 60 * 1000)
-      ),
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    };
-    await newUserRef.set(usuario);
-    res.json({ ok: true, id: newUserRef.id });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: "Error creando usuario" });
-  }
-});
-
+// ✅ Sesión con API Key en headers
 app.post("/api/session/create", async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ ok: false, error: "Falta userId" });
+    const token = req.headers["x-api-key"];
+    if (!token)
+      return res.status(400).json({ ok: false, error: "Token requerido" });
 
-    const userDoc = await db.collection("usuarios").doc(userId).get();
-    if (!userDoc.exists)
-      return res.status(404).json({ ok: false, error: "Usuario no encontrado" });
+    const snapshot = await db
+      .collection("usuarios")
+      .where("apiKey", "==", token)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return res.status(401).json({ ok: false, error: "Token inválido" });
+    }
+
+    const userDoc = snapshot.docs[0];
+    const userId = userDoc.id;
 
     await db
       .collection("sessions")
@@ -235,7 +214,7 @@ app.post("/api/session/create", async (req, res) => {
         {
           ownerId: userId,
           status: "starting",
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -249,6 +228,7 @@ app.post("/api/session/create", async (req, res) => {
   }
 });
 
+// ✅ Obtener QR de sesión
 app.get("/api/session/qr", async (req, res) => {
   try {
     const { sessionId } = req.query;
@@ -263,7 +243,7 @@ app.get("/api/session/qr", async (req, res) => {
     res.json({
       ok: true,
       qr: data.qr || null,
-      status: data.status || "unknown"
+      status: data.status || "unknown",
     });
   } catch (e) {
     console.error(e);
