@@ -6,9 +6,9 @@ import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
 
-// 🔥 Importación de Baileys (asegurando compatibilidad)
+// 🔥 Importación correcta de Baileys (v6.7.8)
 import {
-  default as makeWASocket,
+  makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
 } from "@whiskeysockets/baileys";
@@ -64,7 +64,7 @@ const createAndConnectSocket = async (sessionId) => {
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false, // ⛔ No imprimir en consola
+    printQRInTerminal: false,
     markOnlineOnConnect: false,
   });
 
@@ -90,7 +90,6 @@ const createAndConnectSocket = async (sessionId) => {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // ✅ Guardar QR en Firestore
     if (qr) {
       console.log("📲 Nuevo QR generado");
       const dataUrl = await qrcode.toDataURL(qr);
