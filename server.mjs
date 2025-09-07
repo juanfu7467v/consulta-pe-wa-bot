@@ -6,8 +6,9 @@ import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
 
-// 🔥 Importación de Baileys (versión 6.7.8 asegurada)
-import makeWASocket, {
+// 🔥 Importación correcta de Baileys v6.7.8
+import {
+  makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
 } from "@whiskeysockets/baileys";
@@ -76,7 +77,9 @@ const createAndConnectSocket = async (sessionId) => {
       try {
         await sock.rejectCall(call.id, call.from);
         console.log("Llamada rechazada de:", call.from);
-        await sock.sendMessage(call.from, { text: "📵 No acepto llamadas en este número." });
+        await sock.sendMessage(call.from, {
+          text: "📵 No acepto llamadas en este número.",
+        });
       } catch (err) {
         console.error("Error al rechazar llamada:", err?.message || err);
       }
@@ -147,7 +150,7 @@ const createAndConnectSocket = async (sessionId) => {
 };
 
 // ---------------- API endpoints ----------------
-// ✅ Crear sesión sin token
+// ✅ Crear sesión
 app.get("/api/session/create", async (req, res) => {
   try {
     const sessionId = req.query.sessionId || `session_${Date.now()}`;
