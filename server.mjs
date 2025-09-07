@@ -3,6 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
 import qrcode from "qrcode";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -41,7 +43,11 @@ try {
 const createAndConnectSocket = async (sessionId) => {
   if (!makeWASocket) throw new Error("Baileys no disponible");
 
-  const { state, saveCreds } = await useMultiFileAuthState(`/tmp/${sessionId}`);
+  // Carpeta para sesiones
+  const sessionDir = path.join("/tmp/sessions", sessionId);
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
@@ -50,7 +56,12 @@ const createAndConnectSocket = async (sessionId) => {
 
   sessions.set(sessionId, { sock, status: "starting", qr: null });
 
-  sock.ev.on("creds.update", saveCreds);
+  // Guardar creds SOLO cuando ya está conectado
+  sock.ev.on("creds.update", async () => {
+    if (sessions.get(sessionId)?.status === "connected") {
+      await saveCreds();
+    }
+  });
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -63,6 +74,7 @@ const createAndConnectSocket = async (sessionId) => {
       sessions.get(sessionId).qr = null;
       sessions.get(sessionId).status = "connected";
       console.log("✅ WhatsApp conectado:", sessionId);
+      await saveCreds(); // ahora sí guardar
     }
     if (connection === "close") {
       const reason = lastDisconnect?.error?.output?.statusCode;
@@ -74,6 +86,7 @@ const createAndConnectSocket = async (sessionId) => {
     }
   });
 
+  // Responder mensajes entrantes con Gemini
   sock.ev.on("messages.upsert", async (m) => {
     for (const msg of m.messages || []) {
       if (!msg.message || msg.key.fromMe) continue;
@@ -95,7 +108,9 @@ const createAndConnectSocket = async (sessionId) => {
 // Crear sesión
 app.get("/api/session/create", async (req, res) => {
   const sessionId = req.query.sessionId || `session_${Date.now()}`;
-  await createAndConnectSocket(sessionId);
+  if (!sessions.has(sessionId)) {
+    await createAndConnectSocket(sessionId);
+  }
   res.json({ ok: true, sessionId });
 });
 
@@ -114,6 +129,21 @@ app.post("/api/session/send", async (req, res) => {
   if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
   await s.sock.sendMessage(to, { text });
   res.json({ ok: true });
+});
+
+// Resetear sesión (forzar nuevo QR)
+app.post("/api/session/reset", async (req, res) => {
+  const { sessionId } = req.body;
+  const sessionDir = path.join("/tmp/sessions", sessionId);
+  try {
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+    sessions.delete(sessionId);
+    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo" }));
