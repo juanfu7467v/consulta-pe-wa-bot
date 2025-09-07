@@ -6,7 +6,7 @@ import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
 
-// ✅ Importación correcta de Baileys (versión nueva v6+)
+// 🔥 Importación de Baileys (versión 6.7.8 asegurada)
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
@@ -59,7 +59,6 @@ const sockets = new Map();
 const createAndConnectSocket = async (sessionId) => {
   if (sockets.has(sessionId)) return sockets.get(sessionId);
 
-  // ✅ MultiFileAuthState (asíncrono)
   const { state, saveCreds } = await useMultiFileAuthState(`/tmp/${sessionId}`);
 
   const sock = makeWASocket({
