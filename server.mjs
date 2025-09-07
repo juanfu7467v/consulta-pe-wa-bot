@@ -1,4 +1,3 @@
-// server.mjs
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -56,7 +55,6 @@ const createAndConnectSocket = async (sessionId) => {
 
   sessions.set(sessionId, { sock, status: "starting", qr: null });
 
-  // Guardar solo cuando la sesión está abierta
   sock.ev.on("creds.update", async () => {
     if (sessions.get(sessionId)?.status === "connected") await saveCreds();
   });
