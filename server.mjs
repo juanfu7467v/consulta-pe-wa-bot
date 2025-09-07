@@ -6,7 +6,7 @@ import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
 
-// 🔥 Importación correcta de Baileys (v6.7.8)
+// 🔥 Baileys
 import {
   makeWASocket,
   useMultiFileAuthState,
@@ -64,7 +64,8 @@ const createAndConnectSocket = async (sessionId) => {
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false,
+    printQRInTerminal: true, // ✅ muestra el QR en logs
+    browser: ["ConsultaPE", "Chrome", "1.0"], // ✅ evita error Connection Failure
     markOnlineOnConnect: false,
   });
 
@@ -76,7 +77,7 @@ const createAndConnectSocket = async (sessionId) => {
       if (call.isGroup) continue;
       try {
         await sock.rejectCall(call.id, call.from);
-        console.log("Llamada rechazada de:", call.from);
+        console.log("📵 Llamada rechazada de:", call.from);
         await sock.sendMessage(call.from, {
           text: "📵 No acepto llamadas en este número.",
         });
@@ -91,7 +92,7 @@ const createAndConnectSocket = async (sessionId) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("📲 Nuevo QR generado");
+      console.log("📲 Nuevo QR generado para", sessionId);
       const dataUrl = await qrcode.toDataURL(qr);
       await db.collection("sessions").doc(sessionId).set(
         {
@@ -104,7 +105,7 @@ const createAndConnectSocket = async (sessionId) => {
     }
 
     if (connection === "open") {
-      console.log("✅ WhatsApp conectado para", sessionId);
+      console.log("✅ WhatsApp conectado:", sessionId);
       await db.collection("sessions").doc(sessionId).set(
         {
           qr: null,
@@ -121,7 +122,7 @@ const createAndConnectSocket = async (sessionId) => {
         console.log("⚡ Reconectando...");
         createAndConnectSocket(sessionId);
       } else {
-        console.log("❌ Sesión cerrada para:", sessionId);
+        console.log("❌ Sesión cerrada:", sessionId);
       }
     }
   });
@@ -206,5 +207,5 @@ app.get("/", (req, res) =>
 );
 
 // ---------------- Start server ----------------
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
