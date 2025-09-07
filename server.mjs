@@ -6,9 +6,9 @@ import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
 
-// 🔥 Importación correcta de Baileys v6.7.8
+// 🔥 Importación de Baileys (asegurando compatibilidad)
 import {
-  makeWASocket,
+  default as makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
 } from "@whiskeysockets/baileys";
@@ -41,7 +41,7 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// ---------------- Helpers Gemini ----------------
+// ---------------- Gemini ----------------
 const consumirGemini = async (prompt) => {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
@@ -64,7 +64,7 @@ const createAndConnectSocket = async (sessionId) => {
 
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: false,
+    printQRInTerminal: false, // ⛔ No imprimir en consola
     markOnlineOnConnect: false,
   });
 
@@ -86,14 +86,20 @@ const createAndConnectSocket = async (sessionId) => {
     }
   });
 
-  // 🔄 Manejo de conexión
+  // 🔄 Manejo de conexión + QR
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
+    // ✅ Guardar QR en Firestore
     if (qr) {
+      console.log("📲 Nuevo QR generado");
       const dataUrl = await qrcode.toDataURL(qr);
       await db.collection("sessions").doc(sessionId).set(
-        { qr: dataUrl, status: "qr" },
+        {
+          qr: dataUrl,
+          status: "qr",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
         { merge: true }
       );
     }
