@@ -1,0 +1,8 @@
+---
+
+## 📌 5. `.gitignore`
+```gitignore
+node_modules
+.env
+/tmp
+baileys_auth
