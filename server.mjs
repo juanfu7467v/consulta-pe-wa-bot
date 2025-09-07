@@ -6,7 +6,7 @@ import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
 
-// ✅ Importación correcta de Baileys (versión nueva)
+// ✅ Importación correcta de Baileys (versión nueva v6+)
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
@@ -59,7 +59,7 @@ const sockets = new Map();
 const createAndConnectSocket = async (sessionId) => {
   if (sockets.has(sessionId)) return sockets.get(sessionId);
 
-  // ✅ Ahora usamos MultiFileAuthState
+  // ✅ MultiFileAuthState (asíncrono)
   const { state, saveCreds } = await useMultiFileAuthState(`/tmp/${sessionId}`);
 
   const sock = makeWASocket({
@@ -74,14 +74,20 @@ const createAndConnectSocket = async (sessionId) => {
   sock.ev.on("call", async (calls) => {
     for (const call of calls) {
       if (call.isGroup) continue;
-      await sock.rejectCall(call.id, call.from);
-      console.log("Llamada rechazada de:", call.from);
-      await sock.sendMessage(call.from, { text: "📵 No acepto llamadas en este número." });
+      try {
+        await sock.rejectCall(call.id, call.from);
+        console.log("Llamada rechazada de:", call.from);
+        await sock.sendMessage(call.from, { text: "📵 No acepto llamadas en este número." });
+      } catch (err) {
+        console.error("Error al rechazar llamada:", err?.message || err);
+      }
     }
   });
 
+  // 🔄 Manejo de conexión
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
+
     if (qr) {
       const dataUrl = await qrcode.toDataURL(qr);
       await db.collection("sessions").doc(sessionId).set(
@@ -91,7 +97,7 @@ const createAndConnectSocket = async (sessionId) => {
     }
 
     if (connection === "open") {
-      console.log("WhatsApp conectado para", sessionId);
+      console.log("✅ WhatsApp conectado para", sessionId);
       await db.collection("sessions").doc(sessionId).set(
         {
           qr: null,
@@ -105,10 +111,10 @@ const createAndConnectSocket = async (sessionId) => {
     if (connection === "close") {
       const reason = lastDisconnect?.error?.output?.statusCode;
       if (reason !== DisconnectReason.loggedOut) {
-        console.log("Reconectando...");
+        console.log("⚡ Reconectando...");
         createAndConnectSocket(sessionId);
       } else {
-        console.log("Sesión cerrada para:", sessionId);
+        console.log("❌ Sesión cerrada para:", sessionId);
       }
     }
   });
@@ -125,7 +131,7 @@ const createAndConnectSocket = async (sessionId) => {
           msg.message?.extendedTextMessage?.text ||
           "";
 
-        console.log("Mensaje recibido:", text);
+        console.log("📩 Mensaje recibido:", text);
 
         const reply = await consumirGemini(text || "Hola");
         await sock.sendMessage(from, {
@@ -159,7 +165,7 @@ app.get("/api/session/create", async (req, res) => {
 
     res.json({ ok: true, sessionId });
   } catch (e) {
-    console.error(e);
+    console.error("Error creando sesión:", e?.message || e);
     res.status(500).json({ ok: false, error: "Error creando sesión" });
   }
 });
@@ -182,14 +188,16 @@ app.get("/api/session/qr", async (req, res) => {
       status: data.status || "unknown",
     });
   } catch (e) {
-    console.error(e);
+    console.error("Error al obtener QR:", e?.message || e);
     res.status(500).json({ ok: false, error: "Error al obtener QR" });
   }
 });
 
+// ✅ Root
 app.get("/", (req, res) =>
   res.json({ ok: true, mensaje: "Consulta PE - WhatsApp Bot público 🚀" })
 );
 
+// ---------------- Start server ----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
