@@ -5,20 +5,15 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import axios from "axios";
 import qrcode from "qrcode";
-
-// 👇 Importar Baileys correctamente (CommonJS -> ESM)
 import baileys from "@whiskeysockets/baileys";
-const {
-  default: makeWASocket,
-  useSingleFileAuthState,
-  DisconnectReason,
-} = baileys;
+
+const { default: makeWASocket, useSingleFileAuthState, DisconnectReason } = baileys;
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 
 // ---------------- FIREBASE ----------------
 const serviceAccount = {
@@ -32,8 +27,7 @@ const serviceAccount = {
   client_id: process.env.FIREBASE_CLIENT_ID,
   auth_uri: process.env.FIREBASE_AUTH_URI,
   token_uri: process.env.FIREBASE_TOKEN_URI,
-  auth_provider_x509_cert_url:
-    process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
   client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
   universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
 };
@@ -58,32 +52,11 @@ const consumirGemini = async (prompt) => {
 
 // ---------------- Baileys session manager ----------------
 const sockets = new Map();
-const authCollection = db.collection("wa_auth");
 
-const saveAuthStateToFirestore = async (userId, state) => {
-  await authCollection.doc(userId).set({ state }, { merge: true });
-};
+const createAndConnectSocket = async (sessionId) => {
+  if (sockets.has(sessionId)) return sockets.get(sessionId);
 
-const loadAuthStateFromFirestore = async (userId) => {
-  const doc = await authCollection.doc(userId).get();
-  if (!doc.exists) return null;
-  return doc.data().state || null;
-};
-
-const createAndConnectSocket = async (userId) => {
-  if (sockets.has(userId)) return sockets.get(userId);
-
-  const storedState = await loadAuthStateFromFirestore(userId);
-  const { state, saveState } = useSingleFileAuthState(`/tmp/${userId}.json`);
-
-  if (storedState) {
-    try {
-      const fs = await import("fs");
-      fs.writeFileSync(`/tmp/${userId}.json`, JSON.stringify(storedState));
-    } catch (e) {
-      console.warn("No pude escribir tmp auth file:", e?.message);
-    }
-  }
+  const { state, saveState } = useSingleFileAuthState(`/tmp/${sessionId}.json`);
 
   const sock = makeWASocket({
     auth: state,
@@ -97,18 +70,13 @@ const createAndConnectSocket = async (userId) => {
       if (call.isGroup) continue;
       await sock.rejectCall(call.id, call.from);
       console.log("Llamada rechazada de:", call.from);
-      await sock.sendMessage(call.from, {
-        text: "📵 Lo siento, no acepto llamadas en este número.",
-      });
+      await sock.sendMessage(call.from, { text: "📵 No acepto llamadas en este número." });
     }
   });
 
   sock.ev.on("creds.update", async () => {
     try {
       await saveState();
-      const fs = await import("fs");
-      const data = fs.readFileSync(`/tmp/${userId}.json`, "utf8");
-      await saveAuthStateToFirestore(userId, JSON.parse(data));
     } catch (e) {
       console.error("Error guardando auth state:", e?.message);
     }
@@ -118,15 +86,15 @@ const createAndConnectSocket = async (userId) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
       const dataUrl = await qrcode.toDataURL(qr);
-      await db.collection("sessions").doc(userId).set(
+      await db.collection("sessions").doc(sessionId).set(
         { qr: dataUrl, status: "qr" },
         { merge: true }
       );
     }
 
     if (connection === "open") {
-      console.log("WhatsApp conectado para", userId);
-      await db.collection("sessions").doc(userId).set(
+      console.log("WhatsApp conectado para", sessionId);
+      await db.collection("sessions").doc(sessionId).set(
         {
           qr: null,
           status: "connected",
@@ -140,14 +108,14 @@ const createAndConnectSocket = async (userId) => {
       const reason = lastDisconnect?.error?.output?.statusCode;
       if (reason !== DisconnectReason.loggedOut) {
         console.log("Reconectando...");
-        createAndConnectSocket(userId);
+        createAndConnectSocket(sessionId);
       } else {
-        console.log("Sesión cerrada para:", userId);
+        console.log("Sesión cerrada para:", sessionId);
       }
     }
   });
 
-  // 🔊 Mensajes
+  // 🔊 Mensajes recibidos
   sock.ev.on("messages.upsert", async (m) => {
     try {
       const messages = m.messages || [];
@@ -165,60 +133,40 @@ const createAndConnectSocket = async (userId) => {
         await sock.sendMessage(from, {
           text: reply || "🤖 No entendí tu mensaje.",
         });
-
-        await db
-          .collection("mensajes")
-          .doc(userId)
-          .collection("chats")
-          .add({
-            from,
-            text,
-            reply,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
       }
     } catch (e) {
       console.error("Error procesando mensaje:", e?.message || e);
     }
   });
 
-  sockets.set(userId, sock);
+  sockets.set(sessionId, sock);
   return sock;
 };
 
 // ---------------- API endpoints ----------------
-// ✅ Crear sesión sin token, solo con número/nombre de usuario
-app.post("/api/session/create", async (req, res) => {
+// ✅ Crear sesión sin token
+app.get("/api/session/create", async (req, res) => {
   try {
-    const { userId } = req.body;
-    if (!userId) {
-      return res
-        .status(400)
-        .json({ ok: false, error: "Falta userId (ej: tu número o alias)" });
-    }
+    const sessionId = req.query.sessionId || `session_${Date.now()}`;
 
-    await db
-      .collection("sessions")
-      .doc(userId)
-      .set(
-        {
-          ownerId: userId,
-          status: "starting",
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true }
-      );
+    await db.collection("sessions").doc(sessionId).set(
+      {
+        status: "starting",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
-    await createAndConnectSocket(userId);
+    await createAndConnectSocket(sessionId);
 
-    res.json({ ok: true, sessionId: userId });
+    res.json({ ok: true, sessionId });
   } catch (e) {
     console.error(e);
     res.status(500).json({ ok: false, error: "Error creando sesión" });
   }
 });
 
-// ✅ Obtener QR de sesión
+// ✅ Obtener QR
 app.get("/api/session/qr", async (req, res) => {
   try {
     const { sessionId } = req.query;
@@ -242,7 +190,7 @@ app.get("/api/session/qr", async (req, res) => {
 });
 
 app.get("/", (req, res) =>
-  res.json({ ok: true, mensaje: "Consulta PE - Wilderbot backend público" })
+  res.json({ ok: true, mensaje: "Consulta PE - WhatsApp Bot público 🚀" })
 );
 
 const PORT = process.env.PORT || 3000;
