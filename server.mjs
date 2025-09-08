@@ -32,7 +32,7 @@ const consumirGemini = async (prompt) => {
   }
 };
 
-/* ---------------- Respuestas sin Gemini ---------------- */
+/* ---------------- Respuestas locales ---------------- */
 const respuestasPredefinidas = {
   hola: ["¡Hola! ¿Cómo estás?", "¡Qué gusto saludarte!", "Hola, ¿en qué te ayudo?"],
   ayuda: ["Claro, dime qué necesitas 🙌", "Estoy para ayudarte ✨", "¿Qué consulta tienes?"],
@@ -54,7 +54,7 @@ function obtenerRespuestaLocal(texto) {
   return "Lo siento, no entendí 🤔. Escribe 'menu' para ver opciones.";
 }
 
-/* ------------- Importar Baileys ------------- */
+/* ---------------- Baileys ---------------- */
 let makeWASocket, useMultiFileAuthState, DisconnectReason;
 try {
   const baileysModule = await import("@whiskeysockets/baileys");
@@ -65,8 +65,8 @@ try {
   console.error("Error importando Baileys:", err.message || err);
 }
 
-/* --------------- Crear Socket --------------- */
-const createAndConnectSocket = async (sessionId) => {
+/* ---------------- Crear Socket ---------------- */
+const createAndConnectSocket = async (sessionId, phoneNumber = null) => {
   if (!makeWASocket) throw new Error("Baileys no disponible");
 
   const sessionDir = path.join("./sessions", sessionId);
@@ -77,8 +77,8 @@ const createAndConnectSocket = async (sessionId) => {
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    browser: ["ConsultaPE", "Chrome", "2.0"], // estable para WA Business
-    syncFullHistory: false // evita desincronización que expulsa la sesión
+    browser: ["ConsultaPE", "Chrome", "3.0"],
+    syncFullHistory: false
   });
 
   sessions.set(sessionId, { sock, status: "starting", qr: null });
@@ -88,7 +88,7 @@ const createAndConnectSocket = async (sessionId) => {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
+    if (qr && !phoneNumber) { // Solo mostrar QR si no es vinculación por número
       const dataUrl = await qrcode.toDataURL(qr);
       sessions.get(sessionId).qr = dataUrl;
       sessions.get(sessionId).status = "qr";
@@ -97,7 +97,7 @@ const createAndConnectSocket = async (sessionId) => {
     if (connection === "open") {
       sessions.get(sessionId).qr = null;
       sessions.get(sessionId).status = "connected";
-      console.log("✅ WhatsApp conectado:", sessionId);
+      console.log("✅ WhatsApp conectado:", sessionId, phoneNumber ? `(Número: ${phoneNumber})` : "");
       await saveCreds();
     }
 
@@ -106,7 +106,7 @@ const createAndConnectSocket = async (sessionId) => {
       sessions.get(sessionId).status = "disconnected";
       if (reason !== DisconnectReason.loggedOut) {
         console.log("Reconectando:", sessionId);
-        setTimeout(() => createAndConnectSocket(sessionId), 2000);
+        setTimeout(() => createAndConnectSocket(sessionId, phoneNumber), 2000);
       }
     }
   });
@@ -118,18 +118,13 @@ const createAndConnectSocket = async (sessionId) => {
       const body = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
       if (!body) continue;
 
-      // Espera natural
       const wait = (ms) => new Promise((res) => setTimeout(res, ms));
       await wait(1000 + Math.random() * 2000);
 
-      // Responder con Gemini si existe API KEY, sino con respuestas locales
       let reply = null;
-      if (process.env.GEMINI_API_KEY) {
-        reply = await consumirGemini(body);
-      }
+      if (process.env.GEMINI_API_KEY) reply = await consumirGemini(body);
       if (!reply) reply = obtenerRespuestaLocal(body);
 
-      // Si la respuesta es múltiple (separada por comas)
       if (reply.includes(",")) {
         const partes = reply.split(",");
         for (const p of partes) {
@@ -147,11 +142,20 @@ const createAndConnectSocket = async (sessionId) => {
 
 /* ---------------- Endpoints ---------------- */
 
-// Crear sesión
+// Crear sesión por QR
 app.get("/api/session/create", async (req, res) => {
   const sessionId = req.query.sessionId || `session_${Date.now()}`;
   if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
-  res.json({ ok: true, sessionId });
+  res.json({ ok: true, sessionId, metodo: "qr" });
+});
+
+// Crear sesión con número
+app.get("/api/session/create/number", async (req, res) => {
+  const phoneNumber = req.query.phone; // ej: 51987654321
+  if (!phoneNumber) return res.status(400).json({ ok: false, error: "Falta parámetro ?phone=" });
+  const sessionId = `session_${phoneNumber}`;
+  if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId, phoneNumber);
+  res.json({ ok: true, sessionId, metodo: "numero", phoneNumber });
 });
 
 // Obtener QR
@@ -178,12 +182,13 @@ app.get("/api/session/reset", async (req, res) => {
   try {
     if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
     sessions.delete(sessionId);
-    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
+    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla" });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
+// Default
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
 
 const PORT = process.env.PORT || 3000;
