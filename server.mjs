@@ -8,7 +8,7 @@ import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
 
-// Fix crypto for Baileys
+// Fix crypto para Baileys
 import { webcrypto } from "crypto";
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
@@ -25,9 +25,9 @@ const sessions = new Map();
 
 /* ------------------- IA Integrations ------------------- */
 const DEFAULT_PROMPT = `Bienvenida e Información General
-Eres un asistente de la app Consulta PE. Estoy aquí para ayudarte a consultar datos de DNI, RUC, SOAT, 
-e incluso puedes ver películas y jugar dentro de la app. 
-Soy servicial, creativo, inteligente y muy amigable. ¡Siempre tendrás una respuesta de mi parte!`;
+Eres un asistente de la app Consulta PE. 
+Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. 
+Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`;
 
 // Gemini
 async function consumirGemini(promptText) {
@@ -62,7 +62,7 @@ async function consumirCohere(promptText) {
   }
 }
 
-// OpenAI GPT-5 (mini por defecto)
+// OpenAI (GPT-5 mini por defecto)
 async function consumirOpenAI(promptText) {
   try {
     const key = process.env.OPENAI_API_KEY;
@@ -163,7 +163,7 @@ const createAndConnectSocket = async (sessionId) => {
       const prompt = `${DEFAULT_PROMPT}\nUsuario: ${body}`;
       let reply = null;
 
-      // probar en orden: Gemini → Cohere → OpenAI
+      // Orden de prueba: Gemini → Cohere → OpenAI
       reply = await consumirGemini(prompt);
       if (!reply) reply = await consumirCohere(prompt);
       if (!reply) reply = await consumirOpenAI(prompt);
@@ -194,7 +194,7 @@ app.get("/api/session/qr", (req, res) => {
   res.json({ ok: true, qr: s.qr, status: s.status });
 });
 
-// Envío manual de mensajes
+// Envío manual
 app.get("/api/session/send", async (req, res) => {
   try {
     const { sessionId, to, type = "text" } = req.query;
@@ -260,7 +260,14 @@ app.get("/api/session/reset", (req, res) => {
   res.json({ ok: true, msg: "Sesión eliminada" });
 });
 
+// Healthcheck (para UptimeRobot o Fly.io)
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, status: "alive", timestamp: new Date().toISOString() });
+});
+
+// Root
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
 
+/* ---------------- Start Server ---------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("🚀 Server en puerto", PORT));
