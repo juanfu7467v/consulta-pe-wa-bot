@@ -24,9 +24,10 @@ if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true
 const sessions = new Map();
 
 /* ------------------- IA Integrations ------------------- */
-const DEFAULT_PROMPT = `Eres un asistente de IA de Consulta PE App. 
-Puedes ayudar a consultar DNI, RUC, SOAT, e incluso hablar de películas y juegos. 
-Eres servicial, creativo, inteligente y muy amigable. Siempre respondes.`;
+const DEFAULT_PROMPT = `Bienvenida e Información General
+Eres un asistente de la app Consulta PE. Estoy aquí para ayudarte a consultar datos de DNI, RUC, SOAT, 
+e incluso puedes ver películas y jugar dentro de la app. 
+Soy servicial, creativo, inteligente y muy amigable. ¡Siempre tendrás una respuesta de mi parte!`;
 
 // Gemini
 async function consumirGemini(promptText) {
@@ -61,14 +62,14 @@ async function consumirCohere(promptText) {
   }
 }
 
-// OpenAI
+// OpenAI GPT-5 (mini por defecto)
 async function consumirOpenAI(promptText) {
   try {
     const key = process.env.OPENAI_API_KEY;
     if (!key) return null;
     const url = "https://api.openai.com/v1/chat/completions";
     const body = {
-      model: "gpt-4o-mini",
+      model: "gpt-5-mini",
       messages: [{ role: "system", content: DEFAULT_PROMPT }, { role: "user", content: promptText }],
     };
     const r = await axios.post(url, body, {
@@ -122,7 +123,6 @@ const createAndConnectSocket = async (sessionId) => {
   });
 
   sessions.set(sessionId, { sock, status: "starting", qr: null });
-
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
@@ -163,7 +163,7 @@ const createAndConnectSocket = async (sessionId) => {
       const prompt = `${DEFAULT_PROMPT}\nUsuario: ${body}`;
       let reply = null;
 
-      // probar Gemini > Cohere > OpenAI
+      // probar en orden: Gemini → Cohere → OpenAI
       reply = await consumirGemini(prompt);
       if (!reply) reply = await consumirCohere(prompt);
       if (!reply) reply = await consumirOpenAI(prompt);
@@ -194,7 +194,7 @@ app.get("/api/session/qr", (req, res) => {
   res.json({ ok: true, qr: s.qr, status: s.status });
 });
 
-// Envío manual
+// Envío manual de mensajes
 app.get("/api/session/send", async (req, res) => {
   try {
     const { sessionId, to, type = "text" } = req.query;
