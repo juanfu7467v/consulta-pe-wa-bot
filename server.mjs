@@ -24,7 +24,11 @@ if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true
 const sessions = new Map(); // in-memory registry
 
 /* ---------------- Default global prompt ---------------- */
-const GLOBAL_DEFAULT_PROMPT = `Bienvenida e Información General Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`;
+const GLOBAL_DEFAULT_PROMPT = {
+    gemini: `Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`,
+    cohere: `Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`,
+    openai: `Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`
+};
 
 /* ---------------- Helpers ---------------- */
 const readJSON = (p, fallback = null) => {
@@ -37,7 +41,7 @@ const readJSON = (p, fallback = null) => {
 const writeJSON = (p, obj) => fs.writeFileSync(p, JSON.stringify(obj, null, 2));
 
 /* ---------------- AI Integrations ---------------- */
-async function consumirGemini(promptText) {
+async function consumirGemini(promptText, systemPrompt) {
     try {
         const key = process.env.GEMINI_API_KEY;
         if (!key) return null;
@@ -51,12 +55,12 @@ async function consumirGemini(promptText) {
     }
 }
 
-async function consumirCohere(promptText) {
+async function consumirCohere(promptText, systemPrompt) {
     try {
         const key = process.env.COHERE_API_KEY;
         if (!key) return null;
         const url = "https://api.cohere.ai/v1/chat";
-        const body = { model: "command-r-plus", messages: [{ role: "user", content: promptText }] };
+        const body = { model: "command-r-plus", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: promptText }] };
         const r = await axios.post(url, body, {
             headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
             timeout: 20000,
@@ -68,7 +72,7 @@ async function consumirCohere(promptText) {
     }
 }
 
-async function consumirOpenAI(promptText, systemPrompt = GLOBAL_DEFAULT_PROMPT) {
+async function consumirOpenAI(promptText, systemPrompt) {
     try {
         const key = process.env.OPENAI_API_KEY;
         if (!key) return null;
@@ -153,16 +157,17 @@ const createAndConnectSocket = async (sessionId) => {
 
     const settingsPath = path.join(sessionDir, "settings.json");
     const defaultSettings = {
-        prompt: GLOBAL_DEFAULT_PROMPT,
+        prompt: { ...GLOBAL_DEFAULT_PROMPT },
+        selectedAI: "gemini",
         localResponses: { ...{ hola: ["¡Hola! ¿Cómo estás?"], ayuda: ["Dime qué necesitas"] } },
         matchMode: "exact",
         welcomeMessage: "¡Hola! Soy tu asistente Consulta PE.",
-        localEnabled: true,
+        localEnabled: false, // Local responses are disabled by default now
         sourceIndicator: false,
         cooldownSeconds: 10
     };
     let settings = readJSON(settingsPath, defaultSettings);
-    settings = { ...defaultSettings, ...settings };
+    settings = { ...defaultSettings, ...settings, prompt: { ...defaultSettings.prompt, ...settings.prompt } };
     writeJSON(settingsPath, settings);
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -255,16 +260,38 @@ const createAndConnectSocket = async (sessionId) => {
                 }
             }
             if (!reply) {
-                const promptToUse = `${session.settings.prompt || GLOBAL_DEFAULT_PROMPT}\nUsuario: ${body}`;
-                reply = await consumirGemini(promptToUse);
-                if (reply) usedSource = "gemini";
-                if (!reply) {
-                    reply = await consumirCohere(promptToUse);
+                const selectedAI = session.settings.selectedAI || "gemini";
+                const promptToUse = `${session.settings.prompt[selectedAI]}\nUsuario: ${body}`;
+                
+                if (selectedAI === "gemini") {
+                    reply = await consumirGemini(promptToUse, session.settings.prompt.gemini);
+                    if (reply) usedSource = "gemini";
+                }
+                
+                if (!reply && selectedAI === "cohere") {
+                    reply = await consumirCohere(body, session.settings.prompt.cohere);
                     if (reply) usedSource = "cohere";
                 }
-                if (!reply) {
-                    reply = await consumirOpenAI(body, session.settings.prompt || GLOBAL_DEFAULT_PROMPT);
+                
+                if (!reply && selectedAI === "openai") {
+                    reply = await consumirOpenAI(body, session.settings.prompt.openai);
                     if (reply) usedSource = "openai";
+                }
+                
+                // Fallback to other AIs if the selected one fails
+                if (!reply) {
+                    if (selectedAI !== "gemini") {
+                        reply = await consumirGemini(promptToUse, session.settings.prompt.gemini);
+                        if (reply) usedSource = "gemini_fallback";
+                    }
+                    if (!reply && selectedAI !== "cohere") {
+                        reply = await consumirCohere(body, session.settings.prompt.cohere);
+                        if (reply) usedSource = "cohere_fallback";
+                    }
+                    if (!reply && selectedAI !== "openai") {
+                        reply = await consumirOpenAI(body, session.settings.prompt.openai);
+                        if (reply) usedSource = "openai_fallback";
+                    }
                 }
             }
             if (!reply) {
@@ -358,15 +385,16 @@ app.get("/api/session/reset", async (req, res) => {
 });
 
 app.get("/api/session/prompt/set", async (req, res) => {
-    const { sessionId, prompt } = req.query;
-    if (!sessionId || !prompt) return res.status(400).json({ ok: false, error: "sessionId y prompt son requeridos" });
+    const { sessionId, ai, prompt } = req.query;
+    if (!sessionId || !ai || !prompt) return res.status(400).json({ ok: false, error: "sessionId, ai y prompt son requeridos" });
 
     const session = sessions.get(sessionId);
     if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
 
-    session.settings.prompt = prompt;
+    if (!session.settings.prompt) session.settings.prompt = {};
+    session.settings.prompt[ai] = prompt;
     writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: "Prompt actualizado" });
+    res.json({ ok: true, message: `Prompt para ${ai} actualizado` });
 });
 
 app.get("/api/session/localResponses/set", async (req, res) => {
@@ -449,11 +477,28 @@ app.get("/api/session/cooldown/set", async (req, res) => {
     res.json({ ok: true, message: "Cooldown actualizado" });
 });
 
+app.get("/api/session/selectAI/set", async (req, res) => {
+    const { sessionId, ai } = req.query;
+    if (!sessionId || !ai) return res.status(400).json({ ok: false, error: "sessionId y ai son requeridos" });
+
+    const session = sessions.get(sessionId);
+    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
+
+    if (!["gemini", "cohere", "openai"].includes(ai)) {
+        return res.status(400).json({ ok: false, error: "AI no válida. Usa 'gemini', 'cohere' u 'openai'." });
+    }
+
+    session.settings.selectedAI = ai;
+    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
+    res.json({ ok: true, message: `IA seleccionada: ${ai}` });
+});
+
 app.get("/api/session/send", async (req, res) => {
     const { sessionId, to, type, ...options } = req.query;
     if (!sessionId || !to || !type) return res.status(400).json({ ok: false, error: "sessionId, to y type son requeridos" });
     const session = sessions.get(sessionId);
     if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
+    if (!session.sock) return res.status(500).json({ ok: false, error: "Socket de la sesión no disponible" });
 
     try {
         let messagePayload = {};
@@ -513,6 +558,6 @@ app.get("/api/session/send", async (req, res) => {
     }
 });
 
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
+
