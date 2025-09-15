@@ -41,7 +41,7 @@ const readJSON = (p, fallback = null) => {
 const writeJSON = (p, obj) => fs.writeFileSync(p, JSON.stringify(obj, null, 2));
 
 /* ---------------- AI Integrations ---------------- */
-async function consumirGemini(promptText, systemPrompt) {
+async function consumirGemini(promptText) {
     try {
         const key = process.env.GEMINI_API_KEY;
         if (!key) return null;
@@ -162,7 +162,7 @@ const createAndConnectSocket = async (sessionId) => {
         localResponses: { ...{ hola: ["¡Hola! ¿Cómo estás?"], ayuda: ["Dime qué necesitas"] } },
         matchMode: "exact",
         welcomeMessage: "¡Hola! Soy tu asistente Consulta PE.",
-        localEnabled: false, // Local responses are disabled by default now
+        localEnabled: false,
         sourceIndicator: false,
         cooldownSeconds: 10
     };
@@ -261,35 +261,38 @@ const createAndConnectSocket = async (sessionId) => {
             }
             if (!reply) {
                 const selectedAI = session.settings.selectedAI || "gemini";
-                const promptToUse = `${session.settings.prompt[selectedAI]}\nUsuario: ${body}`;
+                const systemPrompt = session.settings.prompt[selectedAI] || GLOBAL_DEFAULT_PROMPT[selectedAI];
                 
                 if (selectedAI === "gemini") {
-                    reply = await consumirGemini(promptToUse, session.settings.prompt.gemini);
+                    reply = await consumirGemini(`${systemPrompt}\nUsuario: ${body}`);
                     if (reply) usedSource = "gemini";
                 }
                 
                 if (!reply && selectedAI === "cohere") {
-                    reply = await consumirCohere(body, session.settings.prompt.cohere);
+                    reply = await consumirCohere(body, systemPrompt);
                     if (reply) usedSource = "cohere";
                 }
                 
                 if (!reply && selectedAI === "openai") {
-                    reply = await consumirOpenAI(body, session.settings.prompt.openai);
+                    reply = await consumirOpenAI(body, systemPrompt);
                     if (reply) usedSource = "openai";
                 }
                 
-                // Fallback to other AIs if the selected one fails
+                // Fallback a otras IAs si la seleccionada falla
                 if (!reply) {
                     if (selectedAI !== "gemini") {
-                        reply = await consumirGemini(promptToUse, session.settings.prompt.gemini);
+                        const fallbackPrompt = session.settings.prompt.gemini || GLOBAL_DEFAULT_PROMPT.gemini;
+                        reply = await consumirGemini(`${fallbackPrompt}\nUsuario: ${body}`);
                         if (reply) usedSource = "gemini_fallback";
                     }
                     if (!reply && selectedAI !== "cohere") {
-                        reply = await consumirCohere(body, session.settings.prompt.cohere);
+                        const fallbackPrompt = session.settings.prompt.cohere || GLOBAL_DEFAULT_PROMPT.cohere;
+                        reply = await consumirCohere(body, fallbackPrompt);
                         if (reply) usedSource = "cohere_fallback";
                     }
                     if (!reply && selectedAI !== "openai") {
-                        reply = await consumirOpenAI(body, session.settings.prompt.openai);
+                        const fallbackPrompt = session.settings.prompt.openai || GLOBAL_DEFAULT_PROMPT.openai;
+                        reply = await consumirOpenAI(body, fallbackPrompt);
                         if (reply) usedSource = "openai_fallback";
                     }
                 }
@@ -309,7 +312,7 @@ const createAndConnectSocket = async (sessionId) => {
             /* --------- NUEVO: efecto "escribiendo" dinámico --------- */
             try {
                 const replyLength = reply.length;
-                const typingTime = Math.min(5000, Math.max(800, replyLength * 35)); // entre 0.8s y máx 5s
+                const typingTime = Math.min(5000, Math.max(800, replyLength * 35));
                 await sock.sendPresenceUpdate("composing", from);
                 await wait(typingTime);
                 await sock.sendPresenceUpdate("paused", from);
@@ -330,7 +333,6 @@ const createAndConnectSocket = async (sessionId) => {
             chats.set(from, meta);
             console.log("Respondido a", from, "source:", usedSource);
         }
-
     });
 
     return sock;
@@ -560,4 +562,3 @@ app.get("/api/session/send", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
-
