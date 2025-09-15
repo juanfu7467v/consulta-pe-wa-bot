@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // server.mjs
 import express from "express";
 import cors from "cors";
@@ -8,557 +7,235 @@ import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
 
-// Fix crypto for Baileys (WebCrypto)
-import { webcrypto } from "crypto";
-if (!globalThis.crypto) globalThis.crypto = webcrypto;
-
 dotenv.config();
 
 const app = express();
-app.use(express.json());
 app.use(cors({ origin: "*" }));
 
-const SESSIONS_BASE = path.join(".", "sessions");
-if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
+const sessions = new Map();
 
-const sessions = new Map(); // in-memory registry
+// ------------------- Gemini -------------------
+const GEMINI_PROMPT = process.env.GEMINI_PROMPT || 
+`Eres un asistente de IA de Consulta PE App, que envía mensajes automáticos. 
+Eres servicial, creativo, inteligente y muy amigable. Siempre das una respuesta.`;
 
-/* ---------------- Default global prompt ---------------- */
-const GLOBAL_DEFAULT_PROMPT = {
-    gemini: `Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`,
-    cohere: `Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`,
-    openai: `Eres un asistente de la app Consulta PE. Puedo ayudarte a consultar DNI, RUC, SOAT, multas, y también conversar de películas o juegos. Soy servicial, creativo, inteligente y muy amigable. Siempre tendrás una respuesta.`
-};
-
-/* ---------------- Helpers ---------------- */
-const readJSON = (p, fallback = null) => {
-    try {
-        return JSON.parse(fs.readFileSync(p, "utf8"));
-    } catch {
-        return fallback;
+const consumirGemini = async (prompt) => {
+  try {
+    if (!process.env.GEMINI_API_KEY) {
+      console.log("GEMINI_API_KEY no está configurada.");
+      return null;
     }
-};
-const writeJSON = (p, obj) => fs.writeFileSync(p, JSON.stringify(obj, null, 2));
-
-/* ---------------- AI Integrations ---------------- */
-async function consumirGemini(promptText) {
-    try {
-        const key = process.env.GEMINI_API_KEY;
-        if (!key) return null;
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${key}`;
-        const body = { contents: [{ parts: [{ text: promptText }] }] };
-        const r = await axios.post(url, body, { timeout: 20000 });
-        return r.data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    } catch (err) {
-        console.error("Error Gemini:", err?.response?.data || err?.message);
-        return null;
-    }
-}
-
-async function consumirCohere(promptText, systemPrompt) {
-    try {
-        const key = process.env.COHERE_API_KEY;
-        if (!key) return null;
-        const url = "https://api.cohere.ai/v1/chat";
-        const body = { model: "command-r-plus", messages: [{ role: "system", content: systemPrompt }, { role: "user", content: promptText }] };
-        const r = await axios.post(url, body, {
-            headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-            timeout: 20000,
-        });
-        return r.data?.text || r.data?.message || r.data?.output?.[0] || null;
-    } catch (err) {
-        console.error("Error Cohere:", err?.response?.data || err?.message);
-        return null;
-    }
-}
-
-async function consumirOpenAI(promptText, systemPrompt) {
-    try {
-        const key = process.env.OPENAI_API_KEY;
-        if (!key) return null;
-        const url = "https://api.openai.com/v1/chat/completions";
-        const body = {
-            model: "gpt-5-mini",
-            messages: [{ role: "system", content: systemPrompt }, { role: "user", content: promptText }],
-            max_tokens: 800,
-        };
-        const r = await axios.post(url, body, {
-            headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-            timeout: 20000,
-        });
-        return r.data?.choices?.[0]?.message?.content?.trim() || null;
-    } catch (err) {
-        console.error("Error OpenAI:", err?.response?.data || err?.message);
-        return null;
-    }
-}
-
-/* ---------------- Local responses matching ---------------- */
-function matchLocal(message, localResponses, matchMode = "exact") {
-    const text = (message || "").trim();
-    if (!text) return null;
-
-    if (matchMode === "exact") {
-        const key = text.toLowerCase();
-        if (localResponses[key]) {
-            const arr = Array.isArray(localResponses[key]) ? localResponses[key] : [localResponses[key]];
-            return arr[Math.floor(Math.random() * arr.length)];
-        }
-        return null;
-    }
-
-    if (matchMode === "pattern") {
-        const low = text.toLowerCase();
-        for (const k of Object.keys(localResponses)) {
-            if (low.includes(k.toLowerCase())) {
-                const arr = Array.isArray(localResponses[k]) ? localResponses[k] : [localResponses[k]];
-                return arr[Math.floor(Math.random() * arr.length)];
+    const model = "gemini-1.5-flash"; // Usar el modelo que funciona con tu clave
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    
+    const body = {
+      contents: [
+        {
+          parts: [
+            {
+              text: `${GEMINI_PROMPT}\nUsuario: ${prompt}`
             }
+          ]
         }
-        return null;
-    }
-
-    if (matchMode === "expert") {
-        for (const k of Object.keys(localResponses)) {
-            if (k.startsWith("/") && k.lastIndexOf("/") > 0) {
-                try {
-                    const lastSlash = k.lastIndexOf("/");
-                    const pattern = k.slice(1, lastSlash);
-                    const flags = k.slice(lastSlash + 1);
-                    const re = new RegExp(pattern, flags || "i");
-                    if (re.test(text)) {
-                        const arr = Array.isArray(localResponses[k]) ? localResponses[k] : [localResponses[k]];
-                        return arr[Math.floor(Math.random() * arr.length)];
-                    }
-                } catch {}
-            }
-        }
-    }
+      ]
+    };
+    
+    const response = await axios.post(url, body, { timeout: 15000 });
+    const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    return text ? text.trim() : null;
+  } catch (err) {
+    console.error("Error al consumir Gemini API:", err.response?.data || err.message);
     return null;
+  }
+};
+
+// ------------------- Respuestas Locales -------------------
+// Objeto JSON correctamente formateado
+const respuestasPredefinidas = {
+  "bienvenida e información general": "¡Hola, ¿en qué puedo ayudarte? Soy el asistente de la app Consulta PE, y estoy aquí para ayudarte a consultar datos de DNI, RUC, SOAT, y mucho más. Soy servicial, creativo, inteligente y muy amigable. ¡Siempre tendrás una respuesta de mi parte!",
+  "comprar créditos": "Hola, crack 👋 Bienvenido al lado premium de Consulta PE.\nElige tu paquete de poder según cuánto quieras desbloquear:\n\nMONTO (S/)     CRÉDITOS\n10                         60\n20                         125\n50                         330\n100                       700\n200                       1500\n\n🎯 Importante: Los créditos no caducan. Lo que compras, es tuyo.\n\n[💰] Medios de pago disponibles:\nYape, lemon cahs, bim.",
+  "datos de pago (yape)": "Buena elección, leyenda.\n📲 Yapea al 929 008 609\n📛 Titular: José R. Cubas\n\nCuando lo hagas, mándame el comprobante + tu correo dentro de la app, y te activo los créditos sin perder el tiempo.",
+  "ya pagué y no tengo los créditos": "Pago recibido, crack 💸\nGracias por confiar en Consulta PE.\n\n📧 Envíame tu correo registrado en la app y en unos minutos vas a tener los créditos activos.\nNo desesperes, todo está bajo control. 🧠",
+  "planes ilimitados": "Consulta sin límites todo el mes a un precio fijo. Elige el que más se acomoda a tus necesidades.\n\nDURACIÓN\n\nPRECIO SUGERIDO\n\nAHORRO ESTIMADO\n\n7 días\n\nS/55\n\n15 días\n\nS/85\n\nS/10\n\n1 mes\n\nS/120\n\nS/20\n\n1 mes y medio\n\nS/165\n\nS/30\n\n2 meses\n\nS/210\n\nS/50\n\n2 meses y medio\n\nS/300\n\nS/37",
+  "descarga la app": "Obvio que sí. Aquí tienes los enlaces seguros y sin rodeos:\n\n🔗 Página oficial: https://www.socialcreator.com/consultapeapk\n🔗 Uptodown: https://com-masitaorex.uptodown.com/android\n🔗 Mediafire: https://www.mediafire.com/file/hv0t7opc8x6kejf/app2706889-uk81cm%25281%2529.apk/file\n🔗 APK Pure: https://apkpure.com/p/com.consulta.pe\n\nDescárgala, instálala y úsala como todo un jefe 💪",
+  "consultas que no están dentro de la app.": "Claro que sí, máquina 💼\nEl servicio cuesta 5 soles. Haz el pago por Yape al 929008609 a nombre de José R. Cubas.\nDespués mándame el comprobante + el DNI o los datos a consultar, y el equipo se encarga de darte resultados reales. Aquí no jugamos.",
+  "métodos de pago": "Te damos opciones como si fueras VIP:\n💰 Yape, Lemon Cash, Bim, PayPal, depósito directo.\n¿No tienes ninguna? Puedes pagar en una farmacia, agente bancario o pedirle el favor a un amigo.\n\n💡 Cuando uno quiere resultados, no pone excusas.",
+  "acceso permanente": "Hola 👋 estimado usuario,\n\nEntendemos tu incomodidad. Es completamente válida.\nSe te ofreció acceso hasta octubre de 2025, y no vamos a negar eso. Pero, escúchalo bien: los accesos antiguos fueron desactivados por situaciones que escaparon de nuestras manos.\n¿La diferencia entre otros y nosotros? Que actuamos de inmediato, no esperamos a que el problema creciera. Reestructuramos todo el sistema y aceleramos los cambios estratégicos necesarios para seguir ofreciendo un servicio de nivel.\n\nTodo está respaldado por nuestros Términos y Condiciones, cláusula 11: “Terminación”. Ahí se aclara que podemos aplicar ajustes sin previo aviso cuando la situación lo requiera. Y esta era una de esas situaciones.\n\nEste cambio ya estaba en el mapa. Solo lo adelantamos. Porque nosotros no seguimos al resto: nos adelantamos. Siempre un paso adelante, nunca atrás.\n\nY porque valoramos tu presencia, te vamos a regalar 15 créditos gratuitos para que pruebes sin compromiso nuestros nuevos servicios.\nUna vez los uses, tú decides si quieres seguir en este camino con nosotros. Nadie te obliga. Pero si sabes elegir, sabes lo que conviene.\n\nGracias por seguir apostando por lo que realmente vale.\nEquipo de Soporte – Consulta PE",
+  "duración del acceso": "Tus créditos son eternos, pero el acceso a los paquetes premium depende del plan que hayas activado.\n¿Se venció tu plan? Solo lo renuevas, al mismo precio.\n¿Perdiste el acceso? Mándame el comprobante y te lo reactivamos sin drama. Aquí no se deja a nadie atrás.",
+  "por qué se paga?": "Porque lo bueno cuesta.\nLos pagos ayudan a mantener servidores, bases de datos y soporte activo.\nCon una sola compra, tienes acceso completo. Y sin límites por cada búsqueda como en otras apps mediocres.",
+  "si continua con el mismo problema más de 2 beses": "⚠️ Tranquilo, sé que no obtuviste exactamente lo que esperabas… todavía.\n\nEstoy en fase de mejora constante, aprendiendo y evolucionando, como todo sistema que apunta a ser el mejor. Algunas cosas aún están fuera de mi alcance, pero no por mucho tiempo.\n\nYa envié una alerta directa al encargado de soporte, quien sí o sí te va a contactar para resolver esto como se debe. Aquí no dejamos nada a medias.\n\n💡 Lo importante es que estás siendo atendido y tu caso ya está siendo gestionado. Paciencia... todo lo bueno toma su tiempo, pero te aseguro que la solución está en camino.",
+  "problemas con la app": "La app está optimizada, pero si algo no te cuadra, mándanos una captura + explicación rápida.\nTu experiencia nos importa y vamos a dejarla al 100%. 🛠️",
+  "agradecimiento": "¡Nos encanta que te encante! 💚\nComparte la app con tus amigos, vecinos o hasta tu ex si quieres. Aquí está el link 👉https://www.socialcreator.com/consultapeapk\n¡Gracias por ser parte de los que sí resuelven!",
+  "eliminar cuenta": "¿Te quieres ir? Bueno… no lo entendemos, pero ok.\nAbre tu perfil, entra a “Política de privacidad” y dale a “Darme de baja”.\nEso sí, te advertimos: el que se va, siempre regresa 😏",
+  "preguntas fuera de tema": "🚨 Atención, crack:\nSoy el asistente oficial de Consulta PE y estoy diseñado para responder únicamente sobre los servicios que ofrece esta app.\n¿Quieres consultar un DNI, revisar vehículos, empresas, ver películas, saber si alguien está en la PNP o checar un sismo? Entonces estás en el lugar correcto.\nYo te guío. Tú dominas. 😎📲",
+  "hola": ["¡Hola! ¿Cómo estás?", "¡Qué gusto saludarte!", "Hola, ¿en qué te ayudo?"],
+  "ayuda": ["Claro, dime qué necesitas 🙌", "Estoy para ayudarte ✨", "¿Qué consulta tienes?"],
+  "menu": [
+    "1️⃣ Consultar DNI\n2️⃣ Consultar RUC\n3️⃣ Consultar SOAT",
+    "Selecciona una opción: 1, 2 o 3"
+  ],
+  "1": ["Has elegido Consultar DNI. Por favor, envíame el número de DNI 🪪"],
+  "2": ["Has elegido Consultar RUC. Envíame el RUC 📊"],
+  "3": ["Has elegido Consultar SOAT. Envíame la placa 🚗"]
+};
+
+function obtenerRespuestaLocal(texto) {
+  const key = texto.toLowerCase().trim();
+  const respuesta = respuestasPredefinidas[key];
+  if (respuesta) {
+    return Array.isArray(respuesta) ? respuesta[Math.floor(Math.random() * respuesta.length)] : respuesta;
+  }
+  return "Lo siento, no entendí 🤔. Escribe 'menu' para ver opciones.";
 }
 
-/* ---------------- Import Baileys ---------------- */
+// ------------------- Importar Baileys -------------------
 let makeWASocket, useMultiFileAuthState, DisconnectReason;
 try {
-    const baileys = await import("@whiskeysockets/baileys");
-    makeWASocket = baileys.makeWASocket;
-    useMultiFileAuthState = baileys.useMultiFileAuthState;
-    DisconnectReason = baileys.DisconnectReason;
+  const baileysModule = await import("@whiskeysockets/baileys");
+  makeWASocket = baileysModule.makeWASocket;
+  useMultiFileAuthState = baileysModule.useMultiFileAuthState;
+  DisconnectReason = baileysModule.DisconnectReason;
 } catch (err) {
-    console.error("Error importando Baileys:", err?.message || err);
+  console.error("Error importando Baileys:", err.message || err);
 }
 
-/* ---------------- Create & connect socket (per session) ---------------- */
+// ------------------- Crear Socket -------------------
 const createAndConnectSocket = async (sessionId) => {
-    if (!makeWASocket) throw new Error("Baileys no disponible");
+  if (!makeWASocket) throw new Error("Baileys no disponible");
 
-    const sessionDir = path.join(SESSIONS_BASE, sessionId);
-    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+  const sessionDir = path.join("./sessions", sessionId);
+  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
-    const settingsPath = path.join(sessionDir, "settings.json");
-    const defaultSettings = {
-        prompt: { ...GLOBAL_DEFAULT_PROMPT },
-        selectedAI: "gemini",
-        localResponses: { ...{ hola: ["¡Hola! ¿Cómo estás?"], ayuda: ["Dime qué necesitas"] } },
-        matchMode: "exact",
-        welcomeMessage: "¡Hola! Soy tu asistente Consulta PE.",
-        localEnabled: false,
-        sourceIndicator: false,
-        cooldownSeconds: 10
-    };
-    let settings = readJSON(settingsPath, defaultSettings);
-    settings = { ...defaultSettings, ...settings, prompt: { ...defaultSettings.prompt, ...settings.prompt } };
-    writeJSON(settingsPath, settings);
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: false,
+    browser: ["ConsultaPE", "Chrome", "2.0"],
+    syncFullHistory: false
+  });
 
-    const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        browser: ["ConsultaPE", "Chrome", "2.0"],
-        syncFullHistory: false
-    });
+  sessions.set(sessionId, { sock, status: "starting", qr: null });
 
-    sessions.set(sessionId, {
-        sock,
-        status: "starting",
-        qr: null,
-        settings,
-        sessionDir,
-        chats: new Map()
-    });
+  sock.ev.on("creds.update", saveCreds);
 
-    sock.ev.on("creds.update", async () => {
-        try {
-            await saveCreds();
-        } catch {}
-    });
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-    sock.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        const session = sessions.get(sessionId);
-        if (!session) return;
-        if (qr) {
-            session.qr = await qrcode.toDataURL(qr);
-            session.status = "qr";
+    if (qr) {
+      const dataUrl = await qrcode.toDataURL(qr);
+      sessions.get(sessionId).qr = dataUrl;
+      sessions.get(sessionId).status = "qr";
+    }
+
+    if (connection === "open") {
+      sessions.get(sessionId).qr = null;
+      sessions.get(sessionId).status = "connected";
+      console.log("✅ WhatsApp conectado:", sessionId);
+      await saveCreds();
+    }
+
+    if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      sessions.get(sessionId).status = "disconnected";
+      if (reason !== DisconnectReason.loggedOut) {
+        console.log("Reconectando:", sessionId);
+        setTimeout(() => createAndConnectSocket(sessionId), 2000);
+      } else {
+        console.log("Sesión cerrada por desconexión del usuario.");
+        sessions.delete(sessionId);
+        fs.rmSync(sessionDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  sock.ev.on("messages.upsert", async (m) => {
+    for (const msg of m.messages || []) {
+      if (!msg.message || msg.key.fromMe) continue;
+      const from = msg.key.remoteJid;
+      const body = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
+      if (!body) continue;
+
+      const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+      await wait(1000 + Math.random() * 2000);
+
+      let reply = null;
+
+      // Intentar con las respuestas locales primero
+      const localReply = obtenerRespuestaLocal(body);
+      if (localReply !== "Lo siento, no entendí 🤔. Escribe 'menu' para ver opciones.") {
+          reply = localReply;
+      } else if (process.env.GEMINI_API_KEY) {
+          reply = await consumirGemini(body);
+      }
+      
+      if (!reply) {
+          reply = "Lo siento, no pude encontrar una respuesta. Por favor, intenta más tarde o escribe 'menu'.";
+      }
+
+      if (reply.includes(",")) {
+        const partes = reply.split(",").map(p => p.trim());
+        for (const p of partes) {
+          await wait(800 + Math.random() * 1200);
+          await sock.sendMessage(from, { text: p });
         }
-        if (connection === "open") {
-            session.qr = null;
-            session.status = "connected";
-            try {
-                await saveCreds();
-            } catch {}
-        }
-        if (connection === "close") {
-            session.status = "disconnected";
-            const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.name;
-            if (DisconnectReason && lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-                setTimeout(() => createAndConnectSocket(sessionId), 2000);
-            }
-        }
-        sessions.set(sessionId, session);
-    });
+      } else {
+        await sock.sendMessage(from, { text: reply });
+      }
+    }
+  });
 
-    /* -------- Manejador de mensajes -------- */
-    sock.ev.on("messages.upsert", async (m) => {
-        const arr = m.messages || [];
-        for (const msg of arr) {
-            if (!msg.message || msg.key?.fromMe) continue;
-            const from = msg.key.remoteJid;
-            const session = sessions.get(sessionId);
-            if (!session) continue;
-
-            const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || (msg.message?.imageMessage && msg.message.imageMessage.caption) || (msg.message?.documentMessage && msg.message.documentMessage.fileName) || "";
-            if (!body) continue;
-            const chats = session.chats;
-            const meta = chats.get(from) || { lastUserMessage: null, lastReply: null, lastReplyAt: 0 };
-            const now = Date.now();
-            const cooldownMs = (session.settings?.cooldownSeconds || 10) * 1000;
-            if (meta.lastUserMessage && meta.lastUserMessage === body && (now - meta.lastReplyAt) < cooldownMs) {
-                meta.lastUserMessage = body;
-                chats.set(from, meta);
-                continue;
-            }
-            meta.lastUserMessage = body;
-            const wait = (ms) => new Promise(r => setTimeout(r, ms));
-            await wait(700 + Math.random() * 1300);
-            let reply = null;
-            let usedSource = null;
-            if (!meta.seenWelcome) {
-                meta.seenWelcome = true;
-                if (session.settings?.welcomeMessage) {
-                    await sock.sendMessage(from, { text: session.settings.welcomeMessage });
-                }
-            }
-            if (session.settings.localEnabled) {
-                const local = session.settings.localResponses || {};
-                const mm = session.settings.matchMode || "exact";
-                const localMatch = matchLocal(body, local, mm);
-                if (localMatch) {
-                    reply = localMatch;
-                    usedSource = "local";
-                }
-            }
-            if (!reply) {
-                const selectedAI = session.settings.selectedAI || "gemini";
-                const systemPrompt = session.settings.prompt[selectedAI] || GLOBAL_DEFAULT_PROMPT[selectedAI];
-                
-                if (selectedAI === "gemini") {
-                    reply = await consumirGemini(`${systemPrompt}\nUsuario: ${body}`);
-                    if (reply) usedSource = "gemini";
-                }
-                
-                if (!reply && selectedAI === "cohere") {
-                    reply = await consumirCohere(body, systemPrompt);
-                    if (reply) usedSource = "cohere";
-                }
-                
-                if (!reply && selectedAI === "openai") {
-                    reply = await consumirOpenAI(body, systemPrompt);
-                    if (reply) usedSource = "openai";
-                }
-                
-                // Fallback a otras IAs si la seleccionada falla
-                if (!reply) {
-                    if (selectedAI !== "gemini") {
-                        const fallbackPrompt = session.settings.prompt.gemini || GLOBAL_DEFAULT_PROMPT.gemini;
-                        reply = await consumirGemini(`${fallbackPrompt}\nUsuario: ${body}`);
-                        if (reply) usedSource = "gemini_fallback";
-                    }
-                    if (!reply && selectedAI !== "cohere") {
-                        const fallbackPrompt = session.settings.prompt.cohere || GLOBAL_DEFAULT_PROMPT.cohere;
-                        reply = await consumirCohere(body, fallbackPrompt);
-                        if (reply) usedSource = "cohere_fallback";
-                    }
-                    if (!reply && selectedAI !== "openai") {
-                        const fallbackPrompt = session.settings.prompt.openai || GLOBAL_DEFAULT_PROMPT.openai;
-                        reply = await consumirOpenAI(body, fallbackPrompt);
-                        if (reply) usedSource = "openai_fallback";
-                    }
-                }
-            }
-            if (!reply) {
-                reply = "Lo siento, no tengo una respuesta ahora mismo.";
-                usedSource = usedSource || "fallback";
-            }
-            if (session.settings.sourceIndicator) {
-                reply = `${reply}\n\n(Fuente: ${usedSource || "desconocida"})`;
-            }
-            if (meta.lastReply && meta.lastReply === reply && (now - meta.lastReplyAt) < cooldownMs) {
-                meta.lastReplyAt = now;
-                chats.set(from, meta);
-                continue;
-            }
-            /* --------- NUEVO: efecto "escribiendo" dinámico --------- */
-            try {
-                const replyLength = reply.length;
-                const typingTime = Math.min(5000, Math.max(800, replyLength * 35));
-                await sock.sendPresenceUpdate("composing", from);
-                await wait(typingTime);
-                await sock.sendPresenceUpdate("paused", from);
-            } catch (e) {
-                console.warn("Error presence:", e?.message || e);
-            }
-            const parts = (reply || "").split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-            if (parts.length > 1) {
-                for (const p of parts) {
-                    await wait(300 + Math.random() * 800);
-                    await sock.sendMessage(from, { text: p });
-                }
-            } else {
-                await sock.sendMessage(from, { text: reply });
-            }
-            meta.lastReply = reply;
-            meta.lastReplyAt = Date.now();
-            chats.set(from, meta);
-            console.log("Respondido a", from, "source:", usedSource);
-        }
-    });
-
-    return sock;
+  return sock;
 };
 
-/* ---------------- API Endpoints ---------------- */
+// ------------------- Endpoints -------------------
+// Crear sesión
 app.get("/api/session/create", async (req, res) => {
-    try {
-        const sessionId = req.query.sessionId || `session_${Date.now()}`;
-        if (!sessions.has(sessionId)) {
-            await createAndConnectSocket(sessionId);
-            await new Promise(r => setTimeout(r, 200));
-        }
-        res.json({ ok: true, sessionId });
-    } catch (e) {
-        res.status(500).json({ ok: false, error: "Error creando sesión" });
-    }
+  const sessionId = req.query.sessionId || `session_${Date.now()}`;
+  if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
+  res.json({ ok: true, sessionId });
 });
 
-app.get("/api/health", (req, res) => {
-    res.json({ ok: true, status: "alive", time: new Date().toISOString() });
+// Obtener QR
+app.get("/api/session/qr", (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessions.has(sessionId)) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+  const s = sessions.get(sessionId);
+  res.json({ ok: true, qr: s.qr, status: s.status });
+});
+
+// Enviar mensaje manual
+app.get("/api/session/send", async (req, res) => {
+  const { sessionId, to, text } = req.query;
+  const s = sessions.get(sessionId);
+  if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+  try {
+    await s.sock.sendMessage(to, { text });
+    res.json({ ok: true, message: "Mensaje enviado ✅" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Resetear sesión
+app.get("/api/session/reset", async (req, res) => {
+  const { sessionId } = req.query;
+  const sessionDir = path.join("./sessions", sessionId);
+  try {
+    if (sessions.has(sessionId)) {
+      const { sock } = sessions.get(sessionId);
+      if (sock) await sock.end();
+      sessions.delete(sessionId);
+    }
+    if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
+    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
-
-app.get("/api/session/qr", async (req, res) => {
-    const { sessionId } = req.query;
-    if (!sessionId) return res.status(400).json({ ok: false, error: "sessionId es requerido" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    res.json({ ok: true, qr: session.qr, status: session.status });
-});
-
-app.get("/api/session/reset", async (req, res) => {
-    const { sessionId } = req.query;
-    if (!sessionId) return res.status(400).json({ ok: false, error: "sessionId es requerido" });
-
-    const session = sessions.get(sessionId);
-    if (session) {
-        try {
-            await session.sock?.end();
-        } catch {}
-        sessions.delete(sessionId);
-    }
-    const sessionDir = path.join(SESSIONS_BASE, sessionId);
-    if (fs.existsSync(sessionDir)) {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
-});
-
-app.get("/api/session/prompt/set", async (req, res) => {
-    const { sessionId, ai, prompt } = req.query;
-    if (!sessionId || !ai || !prompt) return res.status(400).json({ ok: false, error: "sessionId, ai y prompt son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    if (!session.settings.prompt) session.settings.prompt = {};
-    session.settings.prompt[ai] = prompt;
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: `Prompt para ${ai} actualizado` });
-});
-
-app.get("/api/session/localResponses/set", async (req, res) => {
-    const { sessionId, local } = req.query;
-    if (!sessionId || !local) return res.status(400).json({ ok: false, error: "sessionId y local son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-    try {
-        const localObj = JSON.parse(local);
-        session.settings.localResponses = localObj;
-        writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-        res.json({ ok: true, message: "Respuestas locales actualizadas" });
-    } catch (e) {
-        res.status(400).json({ ok: false, error: "El valor de 'local' debe ser un JSON válido." });
-    }
-});
-
-app.get("/api/session/matchmode/set", async (req, res) => {
-    const { sessionId, mode } = req.query;
-    if (!sessionId || !mode) return res.status(400).json({ ok: false, error: "sessionId y mode son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    if (!["exact", "pattern", "expert"].includes(mode)) return res.status(400).json({ ok: false, error: "Modo de coincidencia no válido" });
-
-    session.settings.matchMode = mode;
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: "Modo de coincidencia actualizado" });
-});
-
-app.get("/api/session/welcome/set", async (req, res) => {
-    const { sessionId, welcome } = req.query;
-    if (!sessionId || !welcome) return res.status(400).json({ ok: false, error: "sessionId y welcome son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    session.settings.welcomeMessage = welcome;
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: "Mensaje de bienvenida actualizado" });
-});
-
-app.get("/api/session/local/enable", async (req, res) => {
-    const { sessionId, enable } = req.query;
-    if (!sessionId || enable === undefined) return res.status(400).json({ ok: false, error: "sessionId y enable son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    session.settings.localEnabled = enable === "true";
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: "Estado de respuestas locales actualizado" });
-});
-
-app.get("/api/session/sourceIndicator/set", async (req, res) => {
-    const { sessionId, enable } = req.query;
-    if (!sessionId || enable === undefined) return res.status(400).json({ ok: false, error: "sessionId y enable son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    session.settings.sourceIndicator = enable === "true";
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: "Indicador de fuente actualizado" });
-});
-
-app.get("/api/session/cooldown/set", async (req, res) => {
-    const { sessionId, seconds } = req.query;
-    if (!sessionId || seconds === undefined) return res.status(400).json({ ok: false, error: "sessionId y seconds son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-    const s = parseInt(seconds, 10);
-    if (isNaN(s) || s < 0) return res.status(400).json({ ok: false, error: "Los segundos deben ser un número positivo" });
-
-    session.settings.cooldownSeconds = s;
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: "Cooldown actualizado" });
-});
-
-app.get("/api/session/selectAI/set", async (req, res) => {
-    const { sessionId, ai } = req.query;
-    if (!sessionId || !ai) return res.status(400).json({ ok: false, error: "sessionId y ai son requeridos" });
-
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-
-    if (!["gemini", "cohere", "openai"].includes(ai)) {
-        return res.status(400).json({ ok: false, error: "AI no válida. Usa 'gemini', 'cohere' u 'openai'." });
-    }
-
-    session.settings.selectedAI = ai;
-    writeJSON(path.join(session.sessionDir, "settings.json"), session.settings);
-    res.json({ ok: true, message: `IA seleccionada: ${ai}` });
-});
-
-app.get("/api/session/send", async (req, res) => {
-    const { sessionId, to, type, ...options } = req.query;
-    if (!sessionId || !to || !type) return res.status(400).json({ ok: false, error: "sessionId, to y type son requeridos" });
-    const session = sessions.get(sessionId);
-    if (!session) return res.status(404).json({ ok: false, error: "Sesión no encontrada" });
-    if (!session.sock) return res.status(500).json({ ok: false, error: "Socket de la sesión no disponible" });
-
-    try {
-        let messagePayload = {};
-        switch (type) {
-            case "text":
-                messagePayload = { text: options.text };
-                break;
-            case "image":
-                messagePayload = { image: { url: options.url }, caption: options.text || "" };
-                break;
-            case "document":
-                messagePayload = { document: { url: options.url }, fileName: options.filename || "documento" };
-                break;
-            case "audio":
-                messagePayload = { audio: { url: options.url }, ptt: options.ptt === "true" };
-                break;
-            case "contact":
-                messagePayload = { contacts: { displayName: options.displayName || "Contacto", contacts: [{ vcard: options.vcard }] } };
-                break;
-            case "buttons":
-                messagePayload = {
-                    text: options.text,
-                    buttons: JSON.parse(options.buttons).map(b => ({ buttonId: b.id, buttonText: { displayText: b.text }, type: 1 }))
-                };
-                break;
-            case "list":
-                messagePayload = {
-                    text: options.title,
-                    buttonText: options.buttonText,
-                    listType: 1,
-                    sections: JSON.parse(options.listSections).map(s => ({ title: s.title, rows: s.rows.map(r => ({ title: r.title, rowId: r.rowId })) }))
-                };
-                break;
-            case "event":
-                messagePayload = {
-                    text: options.text,
-                    contextInfo: {
-                        mentionedJid: [to],
-                        externalAdReply: {
-                            renderLargerThumbnail: true,
-                            title: options.title,
-                            sourceUrl: "https://consulta-pe.com",
-                            thumbnailUrl: "https://consulta-pe.com/logo.png",
-                            mediaType: 1,
-                        }
-                    }
-                };
-                break;
-            default:
-                return res.status(400).json({ ok: false, error: "Tipo de mensaje no válido" });
-        }
-        await session.sock.sendMessage(to, messagePayload);
-        res.json({ ok: true, message: "Mensaje enviado" });
-    } catch (e) {
-        console.error("Error enviando mensaje:", e?.message || e);
-        res.status(500).json({ ok: false, error: "Error al enviar el mensaje", details: e.message });
-    }
-});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
