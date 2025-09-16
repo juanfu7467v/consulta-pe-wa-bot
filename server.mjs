@@ -1158,15 +1158,12 @@ app.get("/api/session/reset", async (req, res) => {
   }
 });
 
-app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
-
-// Nuevo: Endpoint para mantener el bot activo
-app.get('/api/health', (req, res) => {
-    const isBotActive = sessions.size > 0 && Array.from(sessions.values()).some(s => s.status === 'connected');
-    const status = isBotActive ? 'ok' : 'disconnected';
-    const statusCode = isBotActive ? 200 : 503;
-    res.status(statusCode).json({ status: status, sessions: sessions.size });
+// Nueva función de health check para mantener el bot activo
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, status: "alive", time: new Date().toISOString() });
 });
+
+app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
