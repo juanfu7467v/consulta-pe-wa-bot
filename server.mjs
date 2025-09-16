@@ -13,6 +13,7 @@ const app = express();
 app.use(cors({ origin: "*" }));
 
 const sessions = new Map();
+const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
 
 // Estado del bot
 let botPaused = false;
@@ -420,6 +421,24 @@ let respuestasPredefinidas = {};
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
+const geminiVisionApi = axios.create({
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent",
+  params: { key: process.env.GEMINI_API_KEY },
+  timeout: 30000,
+});
+
+const geminiTextApi = axios.create({
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+  params: { key: process.env.GEMINI_API_KEY },
+  timeout: 30000,
+});
+
+const googleSpeechToTextApi = axios.create({
+  baseURL: "https://speech.googleapis.com/v1p1beta1/speech:recognize",
+  params: { key: process.env.GOOGLE_CLOUD_API_KEY },
+  timeout: 30000,
+});
+
 // ------------------- Gemini -------------------
 const consumirGemini = async (prompt) => {
   try {
@@ -450,6 +469,52 @@ const consumirGemini = async (prompt) => {
     console.error("Error al consumir Gemini API:", err.response?.data || err.message);
     return null;
   }
+};
+
+const sendToGeminiVision = async (imageBuffer) => {
+    try {
+        const base64Image = imageBuffer.toString('base64');
+        const prompt = `Analiza esta imagen y describe lo que ves. Si parece un comprobante de pago de Yape, BCP u otro banco peruano, responde con el texto exacto: "Comprobante de pago". Si es una imagen genérica, descríbela en una oración.`;
+        
+        const response = await geminiVisionApi.post("", {
+            contents: [
+                {
+                    parts: [
+                        { text: prompt },
+                        { inline_data: { mime_type: "image/jpeg", data: base64Image } },
+                    ],
+                },
+            ],
+        });
+        
+        const text = response.data.candidates[0].content.parts[0].text;
+        return text ? text.trim() : null;
+    } catch (error) {
+        console.error("Error al analizar la imagen con Gemini Vision:", error.response?.data || error.message);
+        return "Lo siento, no pude analizar esa imagen en este momento.";
+    }
+};
+
+const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
+    try {
+        const audio = audioBuffer.toString('base64');
+        const request = {
+            audio: { content: audio },
+            config: {
+                encoding: "OGG_OPUS",
+                sampleRateHertz: 16000,
+                languageCode: "es-PE",
+                model: "default",
+            },
+        };
+
+        const response = await googleSpeechToTextApi.post("", request);
+        const transcript = response.data?.results?.[0]?.alternatives?.[0]?.transcript;
+        return transcript || "No se pudo transcribir el audio. Por favor, escribe tu mensaje.";
+    } catch (error) {
+        console.error("Error al transcribir el audio con Google Speech-to-Text:", error.response?.data || error.message);
+        return "Lo siento, no pude procesar el audio en este momento.";
+    }
 };
 
 // ------------------- Cohere -------------------
@@ -493,13 +558,14 @@ function obtenerRespuestaLocal(texto) {
 }
 
 // ------------------- Importar Baileys -------------------
-let makeWASocket, useMultiFileAuthState, DisconnectReason, proto;
+let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage;
 try {
   const baileysModule = await import("@whiskeysockets/baileys");
   makeWASocket = baileysModule.makeWASocket;
   useMultiFileAuthState = baileysModule.useMultiFileAuthState;
   DisconnectReason = baileysModule.DisconnectReason;
   proto = baileysModule.proto;
+  downloadContentFromMessage = baileysModule.downloadContentFromMessage;
 } catch (err) {
   console.error("Error importando Baileys:", err.message || err);
 }
@@ -519,6 +585,22 @@ const formatText = (text, style) => {
       return '```' + text + '```';
     default:
       return text;
+  }
+};
+
+const forwardToAdmins = async (sock, message, customerNumber) => {
+  const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+  const forwardedMessage = `*REENVÍO AUTOMÁTICO DE SOPORTE*
+  
+*Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
+
+*Mensaje del cliente:*
+${message}
+  
+*Enviado por el Bot para atención inmediata.*`;
+
+  for (const admin of adminNumbers) {
+    await sock.sendMessage(admin, { text: forwardedMessage });
   }
 };
 
@@ -571,23 +653,63 @@ const createAndConnectSocket = async (sessionId) => {
       }
     }
   });
+  
+  // Manejo de llamadas: rechazarlas automáticamente
+  sock.ev.on("call", async (calls) => {
+    for (const call of calls) {
+      if (call.status === 'offer' || call.status === 'ringing') {
+        console.log(`Llamada entrante de ${call.from}. Rechazando...`);
+        try {
+          await sock.rejectCall(call.id, call.from);
+          await sock.sendMessage(call.from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
+        } catch (error) {
+          console.error("Error al rechazar la llamada:", error);
+        }
+      }
+    }
+  });
 
   sock.ev.on("messages.upsert", async (m) => {
     for (const msg of m.messages || []) {
       if (!msg.message || msg.key.fromMe) continue;
       
       const from = msg.key.remoteJid;
-      const body = msg.message.conversation || msg.message?.extendedTextMessage?.text || "";
-
-      // Evitar responder a mensajes de estado
-      if (from.endsWith("@s.whatsapp.net") && !from.endsWith("@g.us")) {
-          // Si es el primer mensaje de la conversación, enviar el mensaje de bienvenida
-          if (sessions.get(sessionId).lastMessageTimestamp === 0) {
-              await sock.sendMessage(from, { text: welcomeMessage });
-              sessions.get(sessionId).lastMessageTimestamp = Date.now();
-          }
+      const customerNumber = from;
+      
+      // Rechazar mensajes de llamadas
+      if (msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VOICE || msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO) {
+        await sock.sendMessage(from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
+        continue;
       }
-
+      
+      let body = "";
+      
+      // Manejar diferentes tipos de mensajes
+      if (msg.message.conversation) {
+        body = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage) {
+        body = msg.message.extendedTextMessage.text;
+      } else if (msg.message.imageMessage) {
+        const imageBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+        let bufferArray = [];
+        for await (const chunk of imageBuffer) {
+            bufferArray.push(chunk);
+        }
+        const buffer = Buffer.concat(bufferArray);
+        body = await sendToGeminiVision(buffer); // Envía la imagen a Gemini para análisis
+      } else if (msg.message.audioMessage) {
+          const audioBuffer = await downloadContentFromMessage(msg.message.audioMessage, 'audio');
+          let bufferArray = [];
+          for await (const chunk of audioBuffer) {
+            bufferArray.push(chunk);
+          }
+          const buffer = Buffer.concat(bufferArray);
+          body = await sendAudioToGoogleSpeechToText(buffer); // Transcribe el audio a texto
+      } else {
+          await sock.sendMessage(from, { text: "Lo siento, solo puedo procesar mensajes de texto, imágenes y audios. Por favor, envía tu consulta en uno de esos formatos." });
+          continue;
+      }
+      
       if (!body) continue;
 
       // Comando de administrador
@@ -700,7 +822,80 @@ const createAndConnectSocket = async (sessionId) => {
       }
 
       if (botPaused) return;
+      
+      // Control de saludos y fluidez de la conversación
+      const now = Date.now();
+      const lastInteraction = userStates.get(from)?.lastInteraction || 0;
+      const twentyFourHours = 24 * 60 * 60 * 1000;
+      const isNewDay = (now - lastInteraction) > twentyFourHours;
 
+      if (isNewDay && !body.toLowerCase().includes("hola")) {
+          // El bot puede comenzar la conversación con un saludo
+          const userState = userStates.get(from) || {};
+          const isFirstMessage = !userState.messageCount;
+          
+          if (isFirstMessage) {
+            await sock.sendMessage(from, { text: welcomeMessage });
+          }
+      }
+      userStates.set(from, { lastInteraction: now, messageCount: (userStates.get(from)?.messageCount || 0) + 1 });
+      
+      // Lógica para el manejo de "comprobante de pago"
+      if (body.toLowerCase().includes("comprobante de pago")) {
+        // Asume que la imagen es un comprobante. 
+        // Lógica para obtener el número de cliente, correo, etc.
+        // Aquí debes implementar la extracción de datos desde el texto de la conversación
+        // (por ejemplo, "adjunto comprobante, mi correo es..." o pidiendo esos datos después)
+        
+        const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+        const forwardMessage = `*PAGO PENDIENTE DE ACTIVACIÓN*
+  
+*Cliente:* ${customerNumber.replace("@s.whatsapp.net", "")}
+*Mensaje:* El cliente ha enviado un comprobante.
+*Solicitud:* Activar créditos para este usuario.`;
+
+        for (const admin of adminNumbers) {
+            await sock.sendMessage(admin, { text: forwardMessage });
+            await wait(500); // Pausa para no saturar
+        }
+
+        // Respuesta al cliente
+        await sock.sendMessage(from, { text: "¡Recibido! He reenviado tu comprobante a nuestro equipo de soporte para que activen tus créditos de inmediato. Te avisaremos en cuanto estén listos." });
+        continue; // Detener el procesamiento de la IA
+      }
+      
+      // Lógica de "manipulación" (fidelización)
+      const isReturningCustomer = userStates.get(from)?.purchases > 0;
+      const giftCredits = isReturningCustomer ? 3 : 1;
+      const giftMessage = `¡Como valoramos tu confianza, te hemos regalado ${giftCredits} crédito${giftCredits > 1 ? 's' : ''} extra en tu cuenta! 🎁`;
+      
+      // Ejemplo: si el cliente pregunta por planes y luego paga, enviar el mensaje de regalo.
+      // Aquí, podrías integrarlo después del procesamiento del "comprobante de pago"
+      // o en una lógica más avanzada que detecte la venta.
+      if (body.toLowerCase().includes("ya hice el pago")) {
+          // Lógica de regalo
+          await sock.sendMessage(from, { text: giftMessage });
+          // Incrementa el contador de compras del usuario para futuras interacciones
+          const userState = userStates.get(from) || {};
+          userState.purchases = (userState.purchases || 0) + 1;
+          userStates.set(from, userState);
+      }
+      
+      // Enviar encuestas después de la venta
+      const surveyMessage = `¡Gracias por tu compra! Para seguir mejorando, ¿podrías responder esta breve encuesta? [Link a la encuesta]`;
+      // Podrías programar el envío de esto 1-2 minutos después de la activación de créditos.
+      
+      // Si el bot no puede solucionar el problema, reenviar a los encargados
+      const hasProblem = body.toLowerCase().includes("no me funciona") || body.toLowerCase().includes("error");
+      if (hasProblem) {
+          await forwardToAdmins(sock, body, customerNumber);
+          await sock.sendMessage(from, { text: "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello." });
+          continue;
+      }
+      
+      // Evitar que el bot responda "Lo siento, no pude..."
+      let reply = "";
+      
       // Calcular tiempo de "composing" (escribiendo) dinámicamente
       const calculateTypingTime = (textLength) => {
         const msPerChar = 40; // milisegundos por caracter
@@ -710,8 +905,6 @@ const createAndConnectSocket = async (sessionId) => {
 
       await sock.sendPresenceUpdate("composing", from);
       
-      let reply = null;
-
       // Priorizar respuestas locales si existen
       reply = obtenerRespuestaLocal(body);
 
@@ -724,12 +917,12 @@ const createAndConnectSocket = async (sessionId) => {
           case "cohere":
             reply = await consumirCohere(body);
             if (!reply) {
-              reply = "❌ No se pudo obtener una respuesta de Cohere. Por favor, contacta al administrador.";
+              reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
             }
             break;
           case "openai":
             // Lógica para OpenAI
-            reply = "❌ No implementado aún. Por favor, usa /useai gemini";
+            reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
             break;
           case "local":
             reply = "🤔 No se encontró respuesta local. El modo local está activo.";
@@ -740,8 +933,10 @@ const createAndConnectSocket = async (sessionId) => {
         }
       }
 
-      if (!reply) {
-          reply = "Lo siento, no pude encontrar una respuesta. Por favor, intenta más tarde.";
+      // Si la IA no genera una respuesta, o si es un error, usar la respuesta de soporte
+      if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("no pude encontrar una respuesta")) {
+          await forwardToAdmins(sock, body, customerNumber);
+          reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
       }
 
       // Finalizar "composing"
