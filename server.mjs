@@ -6,15 +6,31 @@ import axios from "axios";
 import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
+import streamToBuffer from "stream-to-buffer";
+import OpenAI from "openai";
 
 dotenv.config();
+
+// ------------------- Importar Baileys -------------------
+let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get;
+try {
+    const baileysModule = await import("@whiskeysockets/baileys");
+    makeWASocket = baileysModule.makeWASocket;
+    useMultiFileAuthState = baileysModule.useMultiFileAuthState;
+    DisconnectReason = baileysModule.DisconnectReason;
+    proto = baileysModule.proto;
+    downloadContentFromMessage = baileysModule.downloadContentFromMessage;
+    get = baileysModule.get;
+} catch (err) {
+    console.error("Error importando Baileys:", err.message || err);
+}
 
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 const sessions = new Map();
-const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
+const userStates = new Map(); // Almacenar el estado de la conversación por usuario
 
 // Estado del bot
 let botPaused = false;
@@ -24,11 +40,13 @@ let welcomeMessage = "¡Hola! Soy el asistente virtual de Consulta PE. ¿Cómo p
 // Nuevo: Token para consultas
 const API_TOKEN_5_SOLES = "075389c0de334ac3b081b88d98362392";
 const WHATSAPP_BOT_NUMBER = "51929008609@s.whatsapp.net"; // Número para enviar comandos de 10 soles
+const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
 // Configuración de prompts
 let GEMINI_PROMPT = `Tu nombre es Consulta PE y eres un asistente virtual de WhatsApp.
 Tu objetivo es ser un experto en todos los servicios de la aplicación Consulta PE. Sé servicial, creativo, inteligente y amigable. Responde siempre en español de Latinoamérica.
 Responde de manera conversacional, como si fueras un superhumano que domina la información de la app. Si te preguntan por un tema que no esté en tu información, mantente en tu rol y aclara que solo puedes ayudar con los servicios de Consulta PE.
+
 ---
 Bienvenida e Información General
 Eres un asistente de la app Consulta PE. Estoy aquí para ayudarte a consultar datos de DNI, RUC, SOAT, e incluso puedes ver películas y jugar dentro de la app. Soy servicial, creativo, inteligente y muy amigable. ¡Siempre tendrás una respuesta de mi parte!
@@ -287,6 +305,7 @@ Frases que reconoce:
 ¿Cuál es la documentación de la API?
 ¿Me puedes explicar las APIs?
 Quiero saber sobre las APIs
+Quiero usar la API
 ¿Cómo uso la API?
 ¿Qué endpoints tienen?
 Respuesta:
@@ -431,22 +450,17 @@ Claro, puedo realizar la búsqueda por ti. Tenemos dos opciones:
 Por favor, dime qué tipo de consulta te interesa para darte las instrucciones de pago. Una vez que envíes el comprobante, procesaré la solicitud de inmediato.
 ---
 `;
+
 let COHERE_PROMPT = "";
 let OPENAI_PROMPT = "";
 
 // Respuestas locales y menús
 let respuestasPredefinidas = {};
-let userRequestStates = new Map(); // Nuevo: para gestionar las solicitudes de los usuarios
+let userRequestStates = new Map(); // Para gestionar las solicitudes de los usuarios
 
-const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
-
-// Nuevo: Configuración de OpenAI para análisis de imágenes
-const openaiApi = axios.create({
-    baseURL: 'https://api.openai.com/v1',
-    headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-    }
+// Configuración de OpenAI para análisis de imágenes y audios
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
 });
 
 const validatePaymentReceipt = async (imageUrl) => {
@@ -455,7 +469,7 @@ const validatePaymentReceipt = async (imageUrl) => {
             console.error("OPENAI_API_KEY no está configurada.");
             return { valid: false, reason: "API key is missing." };
         }
-        const response = await openaiApi.post('/chat/completions', {
+        const response = await openai.chat.completions.create({
             model: "gpt-4o-mini", // O un modelo de visión más reciente y asequible
             messages: [
                 {
@@ -463,7 +477,7 @@ const validatePaymentReceipt = async (imageUrl) => {
                     content: [
                         {
                             type: "text",
-                            text: `Analiza esta imagen. ¿Es un comprobante de pago reciente (de hoy) de una app de pagos peruana como Yape o Plin? Responde 'verdadero' si es un comprobante de hoy, y 'falso' si es antiguo, no es un comprobante, o no puedes determinarlo.`
+                            text: `Analiza esta imagen. ¿Es un comprobante de pago reciente (de hoy) de una app de pagos peruana como Yape, Plin o BIM? Responde 'verdadero' si es un comprobante válido y reciente, y 'falso' si es antiguo, no es un comprobante, o no puedes determinarlo.`
                         },
                         {
                             type: "image_url",
@@ -475,9 +489,8 @@ const validatePaymentReceipt = async (imageUrl) => {
             max_tokens: 100
         });
 
-        const textResponse = response.data.choices[0].message.content.trim().toLowerCase();
+        const textResponse = response.choices[0].message.content.trim().toLowerCase();
         
-        // La respuesta de la IA es 'verdadero' o 'falso'
         const isValid = textResponse.includes('verdadero');
         
         return { 
@@ -488,6 +501,13 @@ const validatePaymentReceipt = async (imageUrl) => {
         console.error("Error al validar el comprobante con OpenAI:", error.response?.data || error.message);
         return { valid: false, reason: "Error al procesar la imagen." };
     }
+};
+
+const sendAudioToGoogleSpeechToText = async (buffer) => {
+    // Aquí puedes integrar la API de Google Cloud Speech-to-Text o similar
+    // Para este ejemplo, simulamos la transcripción
+    console.log("Simulando transcripción de audio...");
+    return "transcripción simulada del audio";
 };
 
 // ------------------- Gemini -------------------
@@ -562,572 +582,476 @@ function obtenerRespuestaLocal(texto) {
   return null;
 }
 
-// ------------------- Importar Baileys -------------------
-let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get;
-try {
-  const baileysModule = await import("@whiskeysockets/baileys");
-  makeWASocket = baileysModule.makeWASocket;
-  useMultiFileAuthState = baileysModule.useMultiFileAuthState;
-  DisconnectReason = baileysModule.DisconnectReason;
-  proto = baileysModule.proto;
-  downloadContentFromMessage = baileysModule.downloadContentFromMessage;
-  get = baileysModule.get;
-} catch (err) {
-  console.error("Error importando Baileys:", err.message || err);
-}
-
 // ------------------- Utilidades -------------------
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const forwardToAdmins = async (sock, message, customerNumber) => {
-  const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
-  const forwardedMessage = `*REENVÍO AUTOMÁTICO DE SOPORTE*
-  
+const forwardToAdmins = async (sock, message, customerNumber, type = 'text', media = null) => {
+    const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+    const forwardedMessageText = `*REENVÍO AUTOMÁTICO DE SOPORTE*
 *Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
-
 *Mensaje del cliente:*
 ${message}
-  
 *Enviado por el Bot para atención inmediata.*`;
 
-  for (const admin of adminNumbers) {
-    await sock.sendMessage(admin, { text: forwardedMessage });
-  }
+    for (const admin of adminNumbers) {
+        if (type === 'text') {
+            await sock.sendMessage(admin, { text: forwardedMessageText });
+        } else if (type === 'image' && media) {
+            await sock.sendMessage(admin, { image: media, caption: forwardedMessageText });
+        } else if (type === 'audio' && media) {
+            await sock.sendMessage(admin, { audio: media, caption: forwardedMessageText, ptt: true });
+        } else {
+            // Manejo de otros tipos o fallback
+            await sock.sendMessage(admin, { text: forwardedMessageText });
+        }
+    }
 };
 
 // ------------------- Crear Socket -------------------
 const createAndConnectSocket = async (sessionId) => {
-  if (!makeWASocket) throw new Error("Baileys no disponible");
+    if (!makeWASocket) throw new Error("Baileys no disponible");
 
-  const sessionDir = path.join("./sessions", sessionId);
-  if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionDir = path.join("./sessions", sessionId);
+    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
-  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-  const sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: false,
-    browser: ["ConsultaPE", "Chrome", "2.0"],
-    syncFullHistory: false
-  });
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        browser: ["ConsultaPE", "Chrome", "2.0"],
+        syncFullHistory: false
+    });
 
-  sessions.set(sessionId, { sock, status: "starting", qr: null, lastMessageTimestamp: 0 });
+    sessions.set(sessionId, { sock, status: "starting", qr: null, qrTimestamp: 0, lastMessageTimestamp: 0 });
 
-  sock.ev.on("creds.update", saveCreds);
+    sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
-      const dataUrl = await qrcode.toDataURL(qr);
-      sessions.get(sessionId).qr = dataUrl;
-      sessions.get(sessionId).status = "qr";
-    }
-
-    if (connection === "open") {
-      sessions.get(sessionId).qr = null;
-      sessions.get(sessionId).status = "connected";
-      console.log("✅ WhatsApp conectado:", sessionId);
-      await saveCreds();
-    }
-
-    if (connection === "close") {
-      const reason = lastDisconnect?.error?.output?.statusCode;
-      sessions.get(sessionId).status = "disconnected";
-      if (reason !== DisconnectReason.loggedOut) {
-        console.log("Reconectando:", sessionId);
-        setTimeout(() => createAndConnectSocket(sessionId), 2000);
-      } else {
-        console.log("Sesión cerrada por desconexión del usuario.");
-        sessions.delete(sessionId);
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-      }
-    }
-  });
-  
-  // Manejo de llamadas: rechazarlas automáticamente
-  sock.ev.on("call", async (calls) => {
-    for (const call of calls) {
-      if (call.status === 'offer' || call.status === 'ringing') {
-        console.log(`Llamada entrante de ${call.from}. Rechazando...`);
-        try {
-          await sock.rejectCall(call.id, call.from);
-          await sock.sendMessage(call.from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
-        } catch (error) {
-          console.error("Error al rechazar la llamada:", error);
+        if (qr) {
+            // Retrasar el envío del QR por 1 minuto
+            if (sessions.get(sessionId).qrTimestamp === 0) {
+                sessions.get(sessionId).qrTimestamp = Date.now();
+                console.log("QR generado, esperando 1 minuto para mostrarlo...");
+            }
+            if (Date.now() - sessions.get(sessionId).qrTimestamp >= 60000) {
+                const dataUrl = await qrcode.toDataURL(qr);
+                sessions.get(sessionId).qr = dataUrl;
+                sessions.get(sessionId).status = "qr";
+                console.log("QR disponible.");
+            }
         }
-      }
-    }
-  });
 
-  sock.ev.on("messages.upsert", async (m) => {
-    for (const msg of m.messages || []) {
-      if (!msg.message || msg.key.fromMe) continue;
-      
-      const from = msg.key.remoteJid;
-      const customerNumber = from;
-      
-      // Rechazar mensajes de llamadas
-      if (msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VOICE || msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO) {
-        await sock.sendMessage(from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
-        continue;
-      }
-      
-      let body = "";
-      let manualMessageReply = false;
-      let mediaType = null;
-      let mediaUrl = null;
-
-      const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-      if (quotedMessage) {
-        const originalMessageText = quotedMessage?.conversation || quotedMessage?.extendedTextMessage?.text;
-        if (originalMessageText && originalMessageText.includes("###MANUAL_MESSAGE_REPLY_ID###")) {
-          manualMessageReply = true;
-          
-          let content = null;
-
-          if (msg.message.conversation) {
-            content = msg.message.conversation;
-          } else if (msg.message.extendedTextMessage) {
-            content = msg.message.extendedTextMessage.text;
-          } else if (msg.message.imageMessage) {
-            mediaType = "image";
-            mediaUrl = await getDownloadURL(msg.message.imageMessage, 'image');
-            content = "imagen generada";
-          } else if (msg.message.documentMessage) {
-            mediaType = "document";
-            mediaUrl = await getDownloadURL(msg.message.documentMessage, 'document');
-            content = "pdf generada";
-          }
-          
-          const payload = {
-            message: "found data",
-            result: {
-              quantity: 1,
-              coincidences: [{
-                message: content,
-                url: mediaUrl,
-              }],
-            },
-          };
-          
-          try {
-            await axios.post('http://tu-interfaz-de-usuario.com/webhook', payload); // Replace with your actual webhook URL
-            console.log("Payload enviado a la interfaz:", payload);
-            await sock.sendMessage(from, { text: "¡Recibido! Tu respuesta ha sido procesada." });
-          } catch (error) {
-            console.error("Error al enviar el payload a la interfaz:", error.message);
-          }
-          
-          continue; // Stop further processing for this message
+        if (connection === "open") {
+            sessions.get(sessionId).qr = null;
+            sessions.get(sessionId).qrTimestamp = 0;
+            sessions.get(sessionId).status = "connected";
+            console.log("✅ WhatsApp conectado:", sessionId);
+            await saveCreds();
         }
-      }
 
-      if (msg.message.conversation) {
-        body = msg.message.conversation;
-      } else if (msg.message.extendedTextMessage) {
-        body = msg.message.extendedTextMessage.text;
-      } else if (msg.message.imageMessage) {
-        const imageBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
-        let bufferArray = [];
-        for await (const chunk of imageBuffer) {
-            bufferArray.push(chunk);
-        }
-        const buffer = Buffer.concat(bufferArray);
-        
-        // Nuevo: Usar OpenAI para validar el comprobante
-        const imageUrl = await getDownloadURL(msg.message.imageMessage, 'image');
-        const validationResult = await validatePaymentReceipt(imageUrl);
-
-        if (validationResult.valid) {
-            body = "Comprobante de pago";
-        } else {
-            body = "imagen no reconocida";
-        }
-      } else if (msg.message.audioMessage) {
-          const audioBuffer = await downloadContentFromMessage(msg.message.audioMessage, 'audio');
-          let bufferArray = [];
-          for await (const chunk of audioBuffer) {
-            bufferArray.push(chunk);
-          }
-          const buffer = Buffer.concat(bufferArray);
-          body = await sendAudioToGoogleSpeechToText(buffer);
-      } else {
-          await sock.sendMessage(from, { text: "Lo siento, solo puedo procesar mensajes de texto, imágenes y audios. Por favor, envía tu consulta en uno de esos formatos." });
-          continue;
-      }
-      
-      if (!body) continue;
-
-      // ... Lógica de comandos de administrador (mantenida) ...
-      const is_admin = from.startsWith(ADMIN_NUMBER);
-      if (is_admin && body.startsWith("/")) {
-        const parts = body.substring(1).split("|").map(p => p.trim());
-        const command = parts[0].split(" ")[0];
-        const arg = parts[0].split(" ").slice(1).join(" ");
-        
-        switch (command) {
-          // ... Comandos existentes ...
-          case "pause":
-            botPaused = true;
-            await sock.sendMessage(from, { text: "✅ Bot pausado. No responderé a los mensajes." });
-            break;
-          case "resume":
-            botPaused = false;
-            await sock.sendMessage(from, { text: "✅ Bot reanudado. Volveré a responder." });
-            break;
-          case "useai":
-            if (["gemini", "cohere", "openai", "local"].includes(arg)) {
-              activeAI = arg;
-              await sock.sendMessage(from, { text: `✅ Ahora estoy usando: ${activeAI}.` });
+        if (connection === "close") {
+            const reason = lastDisconnect?.error?.output?.statusCode;
+            sessions.get(sessionId).status = "disconnected";
+            if (reason !== DisconnectReason.loggedOut) {
+                console.log("Reconectando:", sessionId);
+                setTimeout(() => createAndConnectSocket(sessionId), 2000);
             } else {
-              await sock.sendMessage(from, { text: "❌ Comando inválido. Usa: /useai <gemini|cohere|openai|local>" });
+                console.log("Sesión cerrada por desconexión del usuario.");
+                sessions.delete(sessionId);
+                fs.rmSync(sessionDir, { recursive: true, force: true });
             }
-            break;
-          case "setgeminiprompt":
-            GEMINI_PROMPT = arg;
-            await sock.sendMessage(from, { text: "✅ Prompt de Gemini actualizado." });
-            break;
-          case "setcohereprompt":
-            COHERE_PROMPT = arg;
-            await sock.sendMessage(from, { text: "✅ Prompt de Cohere actualizado." });
-            break;
-          case "setopenaiprompt":
-            OPENAI_PROMPT = arg;
-            await sock.sendMessage(from, { text: "✅ Prompt de OpenAI actualizado." });
-            break;
-          case "addlocal":
-            if (parts.length >= 2) {
-              respuestasPredefinidas[parts[0].replace("addlocal ", "").toLowerCase()] = parts[1];
-              await sock.sendMessage(from, { text: `✅ Respuesta local para '${parts[0].replace("addlocal ", "")}' agregada.` });
-            } else {
-              await sock.sendMessage(from, { text: "❌ Comando inválido. Usa: /addlocal <pregunta> | <respuesta>" });
-            }
-            break;
-          case "editlocal":
-            if (parts.length >= 2) {
-              respuestasPredefinidas[parts[0].replace("editlocal ", "").toLowerCase()] = parts[1];
-              await sock.sendMessage(from, { text: `✅ Respuesta local para '${parts[0].replace("editlocal ", "")}' editada.` });
-            } else {
-              await sock.sendMessage(from, { text: "❌ Comando inválido. Usa: /editlocal <pregunta> | <nueva_respuesta>" });
-            }
-            break;
-          case "deletelocal":
-            const keyToDelete = parts[0].replace("deletelocal ", "").toLowerCase();
-            if (respuestasPredefinidas[keyToDelete]) {
-              delete respuestasPredefinidas[keyToDelete];
-              await sock.sendMessage(from, { text: `✅ Respuesta local para '${keyToDelete}' eliminada.` });
-            } else {
-              await sock.sendMessage(from, { text: "❌ La respuesta local no existe." });
-            }
-            break;
-          case "setwelcome":
-            welcomeMessage = arg;
-            await sock.sendMessage(from, { text: "✅ Mensaje de bienvenida actualizado." });
-            break;
-          case "sendmedia":
-            const [targetNumber, url, type, caption = ""] = parts.slice(1);
-            if (!targetNumber || !url || !type) {
-                await sock.sendMessage(from, { text: "❌ Uso: /sendmedia | <número_destino> | <url> | <tipo> | [caption]" });
-                return;
-            }
-            const jid = `${targetNumber}@s.whatsapp.net`;
-            try {
-                const response = await axios.get(url, { responseType: 'arraybuffer' });
-                const buffer = Buffer.from(response.data);
-                const mediaMsg = { [type]: buffer, caption: caption };
-                await sock.sendMessage(jid, mediaMsg);
-            } catch (error) {
-                await sock.sendMessage(from, { text: "❌ Error al enviar el archivo." });
-            }
-            break;
-          case "sendbulk":
-            const [numbers, message] = parts.slice(1);
-            if (!numbers || !message) {
-                await sock.sendMessage(from, { text: "❌ Uso: /sendbulk | <num1,num2,...> | <mensaje>" });
-                return;
-            }
-            const numberList = numbers.split(",").map(num => `${num}@s.whatsapp.net`);
-            for (const number of numberList) {
-                const manualMessageText = `${message}\n\n###MANUAL_MESSAGE_REPLY_ID###`;
-                await sock.sendMessage(number, { text: manualMessageText });
-                await wait(1500);
-            }
-            await sock.sendMessage(from, { text: `✅ Mensaje enviado a ${numberList.length} contactos.` });
-            break;
-          case "status":
-            await sock.sendMessage(from, { text: `
-              📊 *Estado del Bot* 📊
-              Estado de conexión: *${sessions.get(sessionId).status}*
-              IA activa: *${activeAI}*
-              Bot pausado: *${botPaused ? "Sí" : "No"}*
-              Número de respuestas locales: *${Object.keys(respuestasPredefinidas).length}*
-              Mensaje de bienvenida: *${welcomeMessage}*
-            `});
-            break;
-          default:
-            await sock.sendMessage(from, { text: "❌ Comando de administrador no reconocido." });
         }
-        return; // Detener el procesamiento si es un comando de admin
-      }
-      // ... Fin de lógica de comandos de administrador ...
+    });
+    
+    // Manejo de llamadas: rechazarlas automáticamente
+    sock.ev.on("call", async (calls) => {
+        for (const call of calls) {
+            if (call.status === 'offer' || call.status === 'ringing') {
+                console.log(`Llamada entrante de ${call.from}. Rechazando...`);
+                try {
+                    await sock.rejectCall(call.id, call.from);
+                    await sock.sendMessage(call.from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
+                } catch (error) {
+                    console.error("Error al rechazar la llamada:", error);
+                }
+            }
+        }
+    });
 
-      if (botPaused) return;
+    sock.ev.on("messages.upsert", async (m) => {
+        for (const msg of m.messages || []) {
+            if (!msg.message || msg.key.fromMe) continue;
+            
+            const from = msg.key.remoteJid;
+            const customerNumber = from;
+            
+            // Rechazar mensajes de llamadas
+            if (msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VOICE || msg.messageStubType === proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO) {
+                await sock.sendMessage(from, { text: "Hola, soy un asistente virtual y solo atiendo por mensaje de texto. Por favor, escribe tu consulta por aquí." });
+                continue;
+            }
+            
+            let body = "";
+            let mediaBuffer = null;
+            let mediaType = null;
 
-      const now = Date.now();
-      const lastInteraction = userStates.get(from)?.lastInteraction || 0;
-      const twentyFourHours = 24 * 60 * 60 * 1000;
-      const isNewDay = (now - lastInteraction) > twentyFourHours;
+            // Procesamiento de diferentes tipos de mensajes
+            if (msg.message.conversation) {
+                body = msg.message.conversation;
+            } else if (msg.message.extendedTextMessage) {
+                body = msg.message.extendedTextMessage.text;
+            } else if (msg.message.imageMessage) {
+                mediaType = "image";
+                mediaBuffer = await streamToBuffer(await downloadContentFromMessage(msg.message.imageMessage, 'image'));
+                const imageUrl = "data:image/jpeg;base64," + mediaBuffer.toString('base64');
+                const validationResult = await validatePaymentReceipt(imageUrl);
 
-      if (isNewDay && !body.toLowerCase().includes("hola")) {
-          const userState = userStates.get(from) || {};
-          const isFirstMessage = !userState.messageCount;
-          
-          if (isFirstMessage) {
-            await sock.sendMessage(from, { text: welcomeMessage });
-          }
-      }
-      userStates.set(from, { lastInteraction: now, messageCount: (userStates.get(from)?.messageCount || 0) + 1 });
-      
-      // Lógica para detectar el tipo de solicitud del usuario
-      const userRequest = userRequestStates.get(from);
-      if (userRequest) {
-          // El usuario está en un flujo de consulta paga
-          if (body.toLowerCase().includes("comprobante de pago")) {
-              const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
-              
-              // Reenviar el comprobante a los administradores
-              for (const admin of adminNumbers) {
-                  await sock.sendMessage(admin, {
-                      text: `*COMPROBANTE RECIBIDO*
+                if (validationResult.valid) {
+                    body = "comprobante de pago";
+                } else {
+                    body = `imagen recibida: ${validationResult.reason}`;
+                    await forwardToAdmins(sock, body, customerNumber, mediaType, mediaBuffer);
+                    await sock.sendMessage(from, { text: "Gracias por enviar la imagen. Un miembro de nuestro equipo la revisará y te dará una respuesta pronto." });
+                    continue;
+                }
+            } else if (msg.message.audioMessage) {
+                mediaType = "audio";
+                mediaBuffer = await streamToBuffer(await downloadContentFromMessage(msg.message.audioMessage, 'audio'));
+                body = await sendAudioToGoogleSpeechToText(mediaBuffer); // Transcribir audio
+                console.log(`Audio de ${from} transcrito a: "${body}"`);
+            } else if (msg.message.videoMessage || msg.message.documentMessage) {
+                await sock.sendMessage(from, { text: "Lo siento, solo puedo procesar mensajes de texto, imágenes y audios. Por favor, envía tu consulta en uno de esos formatos." });
+                continue;
+            }
+            
+            if (!body) continue;
+
+            // Lógica de comandos de administrador
+            const is_admin = from.startsWith(ADMIN_NUMBER);
+            if (is_admin && body.startsWith("/")) {
+                const parts = body.substring(1).split("|").map(p => p.trim());
+                const command = parts[0].split(" ")[0];
+                const arg = parts[0].split(" ").slice(1).join(" ");
+                
+                switch (command) {
+                    case "pause":
+                    botPaused = true;
+                    await sock.sendMessage(from, { text: "✅ Bot pausado. No responderé a los mensajes." });
+                    break;
+                    case "resume":
+                    botPaused = false;
+                    await sock.sendMessage(from, { text: "✅ Bot reanudado. Volveré a responder." });
+                    break;
+                    case "useai":
+                    if (["gemini", "cohere", "openai", "local"].includes(arg)) {
+                        activeAI = arg;
+                        await sock.sendMessage(from, { text: `✅ Ahora estoy usando: ${activeAI}.` });
+                    } else {
+                        await sock.sendMessage(from, { text: "❌ Comando inválido. Usa: /useai <gemini|cohere|openai|local>" });
+                    }
+                    break;
+                    case "setgeminiprompt":
+                    GEMINI_PROMPT = arg;
+                    await sock.sendMessage(from, { text: "✅ Prompt de Gemini actualizado." });
+                    break;
+                    case "setcohereprompt":
+                    COHERE_PROMPT = arg;
+                    await sock.sendMessage(from, { text: "✅ Prompt de Cohere actualizado." });
+                    break;
+                    case "setopenaiprompt":
+                    OPENAI_PROMPT = arg;
+                    await sock.sendMessage(from, { text: "✅ Prompt de OpenAI actualizado." });
+                    break;
+                    case "addlocal":
+                    if (parts.length >= 2) {
+                        respuestasPredefinidas[parts[0].replace("addlocal ", "").toLowerCase()] = parts[1];
+                        await sock.sendMessage(from, { text: `✅ Respuesta local para '${parts[0].replace("addlocal ", "")}' agregada.` });
+                    } else {
+                        await sock.sendMessage(from, { text: "❌ Comando inválido. Usa: /addlocal <pregunta> | <respuesta>" });
+                    }
+                    break;
+                    case "editlocal":
+                    if (parts.length >= 2) {
+                        respuestasPredefinidas[parts[0].replace("editlocal ", "").toLowerCase()] = parts[1];
+                        await sock.sendMessage(from, { text: `✅ Respuesta local para '${parts[0].replace("editlocal ", "")}' editada.` });
+                    } else {
+                        await sock.sendMessage(from, { text: "❌ Comando inválido. Usa: /editlocal <pregunta> | <nueva_respuesta>" });
+                    }
+                    break;
+                    case "deletelocal":
+                    const keyToDelete = parts[0].replace("deletelocal ", "").toLowerCase();
+                    if (respuestasPredefinidas[keyToDelete]) {
+                        delete respuestasPredefinidas[keyToDelete];
+                        await sock.sendMessage(from, { text: `✅ Respuesta local para '${keyToDelete}' eliminada.` });
+                    } else {
+                        await sock.sendMessage(from, { text: "❌ La respuesta local no existe." });
+                    }
+                    break;
+                    case "setwelcome":
+                    welcomeMessage = arg;
+                    await sock.sendMessage(from, { text: "✅ Mensaje de bienvenida actualizado." });
+                    break;
+                    case "sendmedia":
+                    const [targetNumber, url, type, caption = ""] = parts.slice(1);
+                    if (!targetNumber || !url || !type) {
+                        await sock.sendMessage(from, { text: "❌ Uso: /sendmedia | <número_destino> | <url> | <tipo> | [caption]" });
+                        return;
+                    }
+                    const jid = `${targetNumber}@s.whatsapp.net`;
+                    try {
+                        const response = await axios.get(url, { responseType: 'arraybuffer' });
+                        const buffer = Buffer.from(response.data);
+                        const mediaMsg = { [type]: buffer, caption: caption };
+                        await sock.sendMessage(jid, mediaMsg);
+                    } catch (error) {
+                        await sock.sendMessage(from, { text: "❌ Error al enviar el archivo." });
+                    }
+                    break;
+                    case "sendbulk":
+                    const [numbers, message] = parts.slice(1);
+                    if (!numbers || !message) {
+                        await sock.sendMessage(from, { text: "❌ Uso: /sendbulk | <num1,num2,...> | <mensaje>" });
+                        return;
+                    }
+                    const numberList = numbers.split(",").map(num => `${num}@s.whatsapp.net`);
+                    for (const number of numberList) {
+                        await sock.sendMessage(number, { text: message });
+                        await wait(1500);
+                    }
+                    await sock.sendMessage(from, { text: `✅ Mensaje enviado a ${numberList.length} contactos.` });
+                    break;
+                    case "status":
+                    await sock.sendMessage(from, { text: `
+                        📊 *Estado del Bot* 📊
+                        Estado de conexión: *${sessions.get(sessionId).status}*
+                        IA activa: *${activeAI}*
+                        Bot pausado: *${botPaused ? "Sí" : "No"}*
+                        Número de respuestas locales: *${Object.keys(respuestasPredefinidas).length}*
+                        Mensaje de bienvenida: *${welcomeMessage}*
+                    `});
+                    break;
+                    default:
+                    await sock.sendMessage(from, { text: "❌ Comando de administrador no reconocido." });
+                }
+                return; // Detener el procesamiento si es un comando de admin
+            }
+
+            if (botPaused) return;
+
+            const now = Date.now();
+            const lastInteraction = userStates.get(from)?.lastInteraction || 0;
+            const twentyFourHours = 24 * 60 * 60 * 1000;
+            const isNewDay = (now - lastInteraction) > twentyFourHours;
+
+            if (isNewDay && !body.toLowerCase().includes("hola")) {
+                const userState = userStates.get(from) || {};
+                const isFirstMessage = !userState.messageCount;
+                
+                if (isFirstMessage) {
+                    await sock.sendMessage(from, { text: welcomeMessage });
+                }
+            }
+            userStates.set(from, { lastInteraction: now, messageCount: (userStates.get(from)?.messageCount || 0) + 1 });
+            
+            const userRequest = userRequestStates.get(from);
+            if (userRequest) {
+                if (body.toLowerCase().includes("comprobante de pago")) {
+                    const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+                    
+                    for (const admin of adminNumbers) {
+                        await sock.sendMessage(admin, {
+                            text: `*COMPROBANTE RECIBIDO*
 Cliente: wa.me/${from.replace("@s.whatsapp.net", "")}
 Tipo de pago: ${userRequest.price} soles
 Comando/Datos: ${userRequest.command}`
-                  });
-                  if (msg.message.imageMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
-                      await sock.sendMessage(admin, { image: mediaBuffer });
-                  }
-              }
-              
-              // Confirmar al usuario y procesar la solicitud
-              await sock.sendMessage(from, { text: "¡Comprobante recibido! Procesando tu solicitud de inmediato. Te enviaré el resultado en unos segundos." });
+                        });
+                        if (mediaType === 'image' && mediaBuffer) {
+                            await sock.sendMessage(admin, { image: mediaBuffer });
+                        }
+                    }
+                    
+                    await sock.sendMessage(from, { text: "¡Comprobante recibido! Procesando tu solicitud de inmediato. Te enviaré el resultado en unos segundos." });
 
-              if (userRequest.price === 5) {
-                  // Lógica para consulta de 5 soles (API)
-                  const apiUrl = `https://consulta-pe-apis-data-v2.fly.dev/api/${userRequest.command}?${userRequest.data}`;
-                  try {
-                      const apiResponse = await axios.get(apiUrl, {
-                          headers: { 'x-api-key': API_TOKEN_5_SOLES }
-                      });
-                      const resultText = JSON.stringify(apiResponse.data, null, 2);
-                      await sock.sendMessage(from, { text: `✅ *Resultado de tu consulta (S/5):* \n\n\`\`\`${resultText}\`\`\`` });
-                  } catch (apiError) {
-                      await sock.sendMessage(from, { text: "❌ Lo siento, hubo un error al consultar la API. Por favor, intenta de nuevo o contacta al soporte." });
-                  }
-              } else if (userRequest.price === 10) {
-                  // Lógica para consulta de 10 soles (comando a WhatsApp)
-                  const commandText = `${userRequest.command}`;
-                  await sock.sendMessage(WHATSAPP_BOT_NUMBER, { text: commandText });
-                  await sock.sendMessage(from, { text: "✅ Tu solicitud ha sido enviada al sistema. Esperando respuesta... esto puede tardar unos segundos." });
-              }
+                    if (userRequest.price === 5) {
+                        const apiUrl = `https://consulta-pe-apis-data-v2.fly.dev/api/${userRequest.command}?${userRequest.data}`;
+                        try {
+                            const apiResponse = await axios.get(apiUrl, {
+                                headers: { 'x-api-key': API_TOKEN_5_SOLES }
+                            });
+                            const resultText = JSON.stringify(apiResponse.data, null, 2);
+                            await sock.sendMessage(from, { text: `✅ *Resultado de tu consulta (S/5):* \n\n\`\`\`${resultText}\`\`\`` });
+                        } catch (apiError) {
+                            await sock.sendMessage(from, { text: "❌ Lo siento, hubo un error al consultar la API. Por favor, intenta de nuevo o contacta al soporte." });
+                        }
+                    } else if (userRequest.price === 10) {
+                        const commandText = `${userRequest.command}`;
+                        await sock.sendMessage(WHATSAPP_BOT_NUMBER, { text: commandText });
+                        await sock.sendMessage(from, { text: "✅ Tu solicitud ha sido enviada al sistema. Esperando respuesta... esto puede tardar unos segundos." });
+                        userStates.set(WHATSAPP_BOT_NUMBER, { lastInteractionUser: from });
+                    }
 
-              userRequestStates.delete(from); // Limpiar el estado del usuario
-              continue; // Detener el procesamiento de la IA
-          } else {
-              // El usuario no ha enviado el comprobante, pero sigue en el flujo de pago
-              await sock.sendMessage(from, { text: `Aún estoy esperando el comprobante. Por favor, envía la imagen del pago para procesar tu solicitud: ${userRequest.command}` });
-              continue;
-          }
-      }
-
-      // Si el usuario solicita una consulta paga, iniciar el flujo
-      const pay5Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+de\s+la\s+app|en\s+la\s+app|por\s+5\s+soles)?/i;
-      const pay10Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+en\s+pdf|en\s+imagen|por\s+10\s+soles)?/i;
-      
-      let match5 = body.match(pay5Regex);
-      let match10 = body.match(pay10Regex);
-
-      if (match5) {
-          const rawQuery = match5[2].trim();
-          const parts = rawQuery.split(" ");
-          const command = parts[0];
-          const data = parts.slice(1).join(" ");
-          
-          if (data) {
-              userRequestStates.set(from, { price: 5, command: command, data: data });
-              await sock.sendMessage(from, { text: `Claro, para realizar esa búsqueda el costo es de *S/5.00*. Por favor, Yapea al *929008609* y envíame el comprobante para proceder.` });
-              continue;
-          }
-      }
-
-      if (match10) {
-          const rawQuery = match10[2].trim();
-          const parts = rawQuery.split(" ");
-          const command = parts[0];
-          const data = parts.slice(1).join(" ");
-
-          if (data) {
-              userRequestStates.set(from, { price: 10, command: command, data: data });
-              await sock.sendMessage(from, { text: `Entendido. Para obtener la información que necesitas en *imagen o PDF*, el costo es de *S/10.00*. Realiza tu pago por Yape al *929008609* y envíame el comprobante para que el bot proceda con la búsqueda.` });
-              continue;
-          }
-      }
-
-      // Lógica para reenviar resultados del bot de 10 soles
-      if (from === WHATSAPP_BOT_NUMBER) {
-          // Si el mensaje viene del bot de 10 soles, reenviarlo al usuario original
-          const originalRecipientNumber = userStates.get(from)?.lastInteractionUser; // Esto debe ser persistente
-          if (originalRecipientNumber) {
-              await sock.sendMessage(originalRecipientNumber, {
-                  text: "✅ *Aquí está el resultado de tu consulta de S/10:*",
-                  quoted: msg.key,
-              });
-              // Reenviar el mensaje original (imagen, PDF, etc.)
-              await sock.sendMessage(originalRecipientNumber, {
-                  forward: msg,
-              });
-              continue;
-          }
-      }
-      
-      let reply = "";
-      
-      const calculateTypingTime = (textLength) => {
-        const msPerChar = 40;
-        const maxTime = 5000;
-        return Math.min(textLength * msPerChar, maxTime);
-      };
-
-      await sock.sendPresenceUpdate("composing", from);
-      
-      reply = obtenerRespuestaLocal(body);
-
-      if (!reply) {
-        switch (activeAI) {
-          case "gemini":
-            reply = await consumirGemini(body);
-            break;
-          case "cohere":
-            reply = await consumirCohere(body);
-            if (!reply) {
-              reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+                    userRequestStates.delete(from);
+                    continue;
+                } else {
+                    await sock.sendMessage(from, { text: `Aún estoy esperando el comprobante. Por favor, envía la imagen del pago para procesar tu solicitud de "${userRequest.command}".` });
+                    continue;
+                }
             }
-            break;
-          case "openai":
-            reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
-            break;
-          case "local":
-            reply = "🤔 No se encontró respuesta local. El modo local está activo.";
-            break;
-          default:
-            reply = "⚠️ Error: IA no reconocida. Por favor, contacta al administrador.";
-            break;
+
+            const pay5Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+de\s+la\s+app|en\s+la\s+app|por\s+5\s+soles)?/i;
+            const pay10Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+en\s+pdf|en\s+imagen|por\s+10\s+soles)?/i;
+            
+            let match5 = body.match(pay5Regex);
+            let match10 = body.match(pay10Regex);
+
+            if (match5) {
+                const rawQuery = match5[2].trim();
+                const parts = rawQuery.split(" ");
+                const command = parts[0];
+                const data = parts.slice(1).join(" ");
+                
+                if (data) {
+                    userRequestStates.set(from, { price: 5, command: command, data: data });
+                    await sock.sendMessage(from, { text: `Claro, para realizar esa búsqueda el costo es de *S/5.00*. Por favor, Yapea al *929008609* y envíame el comprobante para proceder.` });
+                    continue;
+                }
+            }
+
+            if (match10) {
+                const rawQuery = match10[2].trim();
+                const parts = rawQuery.split(" ");
+                const command = parts[0];
+                const data = parts.slice(1).join(" ");
+
+                if (data) {
+                    userRequestStates.set(from, { price: 10, command: command, data: data });
+                    await sock.sendMessage(from, { text: `Entendido. Para obtener la información que necesitas en *imagen o PDF*, el costo es de *S/10.00*. Realiza tu pago por Yape al *929008609* y envíame el comprobante para que el bot proceda con la búsqueda.` });
+                    continue;
+                }
+            }
+
+            if (from === WHATSAPP_BOT_NUMBER) {
+                const originalRecipientNumber = userStates.get(from)?.lastInteractionUser;
+                if (originalRecipientNumber) {
+                    await sock.sendMessage(originalRecipientNumber, {
+                        text: "✅ *Aquí está el resultado de tu consulta de S/10:*",
+                    });
+                    await sock.sendMessage(originalRecipientNumber, {
+                        forward: msg,
+                    });
+                    continue;
+                }
+            }
+            
+            let reply = "";
+            const calculateTypingTime = (textLength) => Math.min(textLength * 40, 5000);
+
+            await sock.sendPresenceUpdate("composing", from);
+            
+            reply = obtenerRespuestaLocal(body);
+
+            if (!reply) {
+                switch (activeAI) {
+                    case "gemini":
+                    reply = await consumirGemini(body);
+                    break;
+                    case "cohere":
+                    reply = await consumirCohere(body);
+                    if (!reply) {
+                        reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+                    }
+                    break;
+                    case "openai":
+                    reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+                    break;
+                    case "local":
+                    reply = "🤔 No se encontró respuesta local. El modo local está activo.";
+                    break;
+                    default:
+                    reply = "⚠️ Error: IA no reconocida. Por favor, contacta al administrador.";
+                    break;
+                }
+            }
+
+            if (!reply || reply.includes("no pude encontrar una respuesta")) {
+                await forwardToAdmins(sock, body, customerNumber);
+                reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+            }
+
+            await wait(calculateTypingTime(reply.length));
+            await sock.sendPresenceUpdate("paused", from);
+
+            const replyLength = reply.length;
+            let parts = [reply];
+
+            if (replyLength > 2000) {
+                const chunkSize = Math.ceil(replyLength / 2);
+                parts = [reply.substring(0, chunkSize), reply.substring(chunkSize)];
+            }
+            
+            for (const p of parts) {
+                await sock.sendMessage(from, { text: p });
+                await wait(1000 + Math.random() * 500);
+            }
         }
-      }
+    });
 
-      if (!reply || reply.includes("no pude encontrar una respuesta")) {
-          await forwardToAdmins(sock, body, customerNumber);
-          reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
-      }
-
-      await wait(calculateTypingTime(reply.length));
-      await sock.sendPresenceUpdate("paused", from);
-
-      const replyLength = reply.length;
-      let parts = [reply];
-
-      if (replyLength > 2000) {
-        const chunkSize = Math.ceil(replyLength / 2);
-        parts = [reply.substring(0, chunkSize), reply.substring(chunkSize)];
-      }
-      
-      for (const p of parts) {
-        await sock.sendMessage(from, { text: p });
-        await wait(1000 + Math.random() * 500);
-      }
-    }
-  });
-
-  return sock;
-};
-
-// Function to get a temporary URL for downloaded media
-const getDownloadURL = async (message, type) => {
-    const stream = await downloadContentFromMessage(message, type);
-    const buffer = await streamToBuffer(stream);
-    const filePath = path.join('./temp', `${Date.now()}.${type === 'image' ? 'png' : 'pdf'}`);
-    fs.writeFileSync(filePath, buffer);
-    
-    // Simular subida a un servicio de almacenamiento en la nube
-    // En producción, reemplaza esto con la URL real de un bucket de S3, Cloudflare, etc.
-    const publicUrl = `http://your-server.com/media/${path.basename(filePath)}`;
-    
-    // Almacenar el archivo temporal en el servidor local para la validación
-    // En un entorno de producción, la URL directa del servicio de cloud storage
-    // sería suficiente y no necesitarías guardar el archivo localmente.
-    return publicUrl;
-};
-
-const streamToBuffer = (stream) => {
-  return new Promise((resolve, reject) => {
-    const buffers = [];
-    stream.on('data', chunk => buffers.push(chunk));
-    stream.on('end', () => resolve(Buffer.concat(buffers)));
-    stream.on('error', err => reject(err));
-  });
+    return sock;
 };
 
 // ------------------- Endpoints -------------------
 app.get("/api/session/create", async (req, res) => {
-  const sessionId = req.query.sessionId || `session_${Date.now()}`;
-  if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
-  res.json({ ok: true, sessionId });
+    const sessionId = req.query.sessionId || `session_${Date.now()}`;
+    if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
+    res.json({ ok: true, sessionId });
 });
 
 app.get("/api/session/qr", (req, res) => {
-  const { sessionId } = req.query;
-  if (!sessions.has(sessionId)) return res.status(404).json({ ok: false, error: "Session no encontrada" });
-  const s = sessions.get(sessionId);
-  res.json({ ok: true, qr: s.qr, status: s.status });
+    const { sessionId } = req.query;
+    if (!sessions.has(sessionId)) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+    const s = sessions.get(sessionId);
+    res.json({ ok: true, qr: s.qr, status: s.status });
 });
 
 app.get("/api/session/send", async (req, res) => {
-  const { sessionId, to, text, is_admin_command } = req.query;
-  const s = sessions.get(sessionId);
-  if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
-  try {
-    if (is_admin_command === "true") {
-      await s.sock.sendMessage(to, { text: text });
-      res.json({ ok: true, message: "Comando enviado para procesamiento ✅" });
-    } else {
-      await s.sock.sendMessage(to, { text });
-      res.json({ ok: true, message: "Mensaje enviado ✅" });
+    const { sessionId, to, text, is_admin_command } = req.query;
+    const s = sessions.get(sessionId);
+    if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+    try {
+        if (is_admin_command === "true") {
+            await s.sock.sendMessage(to, { text: text });
+            res.json({ ok: true, message: "Comando enviado para procesamiento ✅" });
+        } else {
+            await s.sock.sendMessage(to, { text });
+            res.json({ ok: true, message: "Mensaje enviado ✅" });
+        }
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
     }
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
 });
 
 app.get("/api/session/reset", async (req, res) => {
-  const { sessionId } = req.query;
-  const sessionDir = path.join("./sessions", sessionId);
-  try {
-    if (sessions.has(sessionId)) {
-      const { sock } = sessions.get(sessionId);
-      if (sock) await sock.end();
-      sessions.delete(sessionId);
+    const { sessionId } = req.query;
+    const sessionDir = path.join("./sessions", sessionId);
+    try {
+        if (sessions.has(sessionId)) {
+            const { sock } = sessions.get(sessionId);
+            if (sock) await sock.end();
+            sessions.delete(sessionId);
+        }
+        if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
+        res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
     }
-    if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-    res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
 });
 
 // Nueva función de health check para mantener el bot activo
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, status: "alive", time: new Date().toISOString() });
+    res.json({ ok: true, status: "alive", time: new Date().toISOString() });
 });
 
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
