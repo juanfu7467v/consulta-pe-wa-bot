@@ -19,7 +19,7 @@ const userStates = new Map(); // Para almacenar el estado de la conversación po
 // Estado del bot
 let botPaused = false;
 let activeAI = process.env.DEFAULT_AI || "gemini";
-let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
+let welcomeMessage = "¡Hola! Soy el asistente virtual de Consulta PE. ¿Cómo puedo ayudarte hoy?";
 
 // Nuevo: Token para consultas
 const API_TOKEN_5_SOLES = "075389c0de334ac3b081b88d98362392";
@@ -440,24 +440,6 @@ let userRequestStates = new Map(); // Nuevo: para gestionar las solicitudes de l
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
-const geminiVisionApi = axios.create({
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent",
-  params: { key: process.env.GEMINI_API_KEY },
-  timeout: 30000,
-});
-
-const geminiTextApi = axios.create({
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
-  params: { key: process.env.GEMINI_API_KEY },
-  timeout: 30000,
-});
-
-const googleSpeechToTextApi = axios.create({
-  baseURL: "https://speech.googleapis.com/v1p1beta1/speech:recognize",
-  params: { key: process.env.GOOGLE_CLOUD_API_KEY },
-  timeout: 30000,
-});
-
 // Nuevo: Configuración de OpenAI para análisis de imágenes
 const openaiApi = axios.create({
     baseURL: 'https://api.openai.com/v1',
@@ -581,7 +563,7 @@ function obtenerRespuestaLocal(texto) {
 }
 
 // ------------------- Importar Baileys -------------------
-let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get
+let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get;
 try {
   const baileysModule = await import("@whiskeysockets/baileys");
   makeWASocket = baileysModule.makeWASocket;
@@ -589,28 +571,13 @@ try {
   DisconnectReason = baileysModule.DisconnectReason;
   proto = baileysModule.proto;
   downloadContentFromMessage = baileysModule.downloadContentFromMessage;
-  get = baileysModule.get
+  get = baileysModule.get;
 } catch (err) {
   console.error("Error importando Baileys:", err.message || err);
 }
 
 // ------------------- Utilidades -------------------
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
-
-const formatText = (text, style) => {
-  switch (style) {
-    case 'bold':
-      return `*${text}*`;
-    case 'italic':
-      return `_${text}_`;
-    case 'strike':
-      return `~${text}~`;
-    case 'mono':
-      return '```' + text + '```';
-    default:
-      return text;
-  }
-};
 
 const forwardToAdmins = async (sock, message, customerNumber) => {
   const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
