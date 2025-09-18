@@ -26,7 +26,7 @@ const userRequestStates = new Map(); // Para gestionar las solicitudes de los us
 // Estado del bot
 let botPaused = false;
 let activeAI = process.env.DEFAULT_AI || "gemini";
-let welcomeMessage = "¡Hola! Soy el asistente virtual de Consulta PE. ¿Cómo puedo ayudarte hoy?";
+let welcomeMessage = "
 
 // Nuevo: Token para consultas
 const API_TOKEN_5_SOLES = process.env.API_TOKEN_5_SOLES;
