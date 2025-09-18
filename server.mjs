@@ -23,6 +23,9 @@ const sessions = new Map();
 const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
 const userRequestStates = new Map(); // Para gestionar las solicitudes de los usuarios
 
+// Nuevo: Historial de la conversación para cada usuario (memoria)
+const conversationHistory = new Map();
+
 // Estado del bot
 let botPaused = false;
 let activeAI = process.env.DEFAULT_AI || "gemini";
@@ -37,8 +40,13 @@ let GEMINI_PROMPT = `
 Tu nombre es Consulta PE y eres un asistente virtual de WhatsApp.
 Tu objetivo es ser un experto en todos los servicios de la aplicación Consulta PE. Sé servicial, creativo, inteligente y amigable. Responde siempre en español de Latinoamérica.
 Responde de manera conversacional, como si fueras un superhumano que domina la información de la app. Si te preguntan por un tema que no esté en tu información, mantente en tu rol y aclara que solo puedes ayudar con los servicios de Consulta PE.
+
 ---
-Bienvenida e Información General
+[Instrucciones de Contexto]
+Debes utilizar el historial de la conversación proporcionado para entender el contexto y mantener una respuesta coherente. El historial está bajo la etiqueta "Historial de conversación:". No repitas información que ya se ha discutido. Si el usuario ya te dio un comprobante, no lo pidas de nuevo. Si ya te dio un DNI, no lo pidas otra vez. Continúa la conversación de manera fluida y lógica.
+
+---
+[Información del Bot]
 Eres un asistente de la app Consulta PE. Estoy listo para ayudarte con cualquier consulta, compra de créditos, problemas con la app, o información sobre nuestras APIs. O si lo deseas también puedo realizar las consultas por ti. Soy servicial, creativo, inteligente y muy amigable. ¡Siempre tendrás una respuesta de mi parte!
 
 🛒 Comprar Créditos para la app
@@ -390,7 +398,7 @@ Si estás leyendo esto, tu curiosidad te trajo al lugar correcto. Como dice la s
 🤓 Recomendaciones prácticas
 😄 No abuses: Sabemos que quieres probar todos los endpoints en un loop infinito, pero recuerda que esto no es un buffet libre.
  Haz logs de tus consultas para saber quién gasta los créditos.
-Guarda caché: tu aplicación se verá más rápida y parecerás un genio.
+ Guarda caché: tu aplicación se verá más rápida y parecerás un genio.
 ❓ Preguntas Frecuentes (FAQ)
  ¿Tengo que recargar aparte para consultar en la app y aparte para la API?
   No, crack. Es un solo saldo.
@@ -572,7 +580,7 @@ const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
 };
 
 // ------------------- Gemini -------------------
-const consumirGemini = async (prompt) => {
+const consumirGemini = async (prompt, history) => {
   try {
     if (!process.env.GEMINI_API_KEY) {
       console.log("GEMINI_API_KEY no está configurada.");
@@ -581,12 +589,15 @@ const consumirGemini = async (prompt) => {
     const model = "gemini-1.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
     
+    // Concatena el historial de conversación en el prompt
+    const fullPrompt = `${GEMINI_PROMPT}\nHistorial de conversación: ${history}\n\nUsuario: ${prompt}`;
+    
     const body = {
       contents: [
         {
           parts: [
             {
-              text: `${GEMINI_PROMPT}\nUsuario: ${prompt}`
+              text: fullPrompt
             }
           ]
         }
@@ -1035,12 +1046,25 @@ Monto: S/ ${userRequest.amount}`
 
       await sock.sendPresenceUpdate("composing", from);
       
+      // Nuevo: Almacenar mensaje del cliente
+      if (!conversationHistory.has(from)) {
+          conversationHistory.set(from, []);
+      }
+      conversationHistory.get(from).push(`Usuario: ${body}`);
+
+      // Limitar el historial a los últimos 20 mensajes
+      if (conversationHistory.get(from).length > 20) {
+          conversationHistory.get(from).shift();
+      }
+
+      const historyString = conversationHistory.get(from).join('\n');
+      
       reply = obtenerRespuestaLocal(body);
 
       if (!reply) {
         switch (activeAI) {
           case "gemini":
-            reply = await consumirGemini(body);
+            reply = await consumirGemini(body, historyString);
             break;
           default:
             reply = "🤔 No se encontró respuesta. Contacta a los encargados.";
@@ -1052,6 +1076,14 @@ Monto: S/ ${userRequest.amount}`
           await forwardToAdmins(sock, body, customerNumber);
           reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
       }
+
+      // Nuevo: Almacenar respuesta del bot
+      conversationHistory.get(from).push(`Bot: ${reply}`);
+      // Limpiar el historial después de 24 horas
+      setTimeout(() => {
+          conversationHistory.delete(from);
+      }, twentyFourHours);
+
 
       await wait(calculateTypingTime(reply.length));
       await sock.sendPresenceUpdate("paused", from);
