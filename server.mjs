@@ -26,7 +26,7 @@ const userRequestStates = new Map(); // Para gestionar las solicitudes de los us
 // Estado del bot
 let botPaused = false;
 let activeAI = process.env.DEFAULT_AI || "gemini";
-let welcomeMessage = "
+let welcomeMessage = "¡Hola! Soy el asistente virtual de Consulta PE. ¿Cómo puedo ayudarte hoy?";
 
 // Nuevo: Token para consultas
 const API_TOKEN_5_SOLES = process.env.API_TOKEN_5_SOLES;
@@ -37,6 +37,8 @@ const ADMIN_NUMBERS_ENV = process.env.ADMIN_NUMBERS;
 const ADMIN_NUMBERS = ADMIN_NUMBERS_ENV ? ADMIN_NUMBERS_ENV.split(',').map(n => `${n.trim()}@s.whatsapp.net`) : [];
 const YAPE_NUMBER = process.env.YAPE_NUMBER;
 const BIM_NUMBER = process.env.BIM_NUMBER;
+const LEMON_CASH_NUMBER = process.env.LEMON_CASH_NUMBER;
+const LEMON_QR_IMAGE = process.env.LEMON_QR_IMAGE;
 
 // Configuración de prompts
 let GEMINI_PROMPT = `
@@ -116,8 +118,8 @@ Número para pagar
 ¿Cómo se llama el que recibe?
 Respuesta:
 ¡Excelente elección, leyenda!
-📲 Yapea al ${YAPE_NUMBER}
-📛 Titular: José R. Cubas
+📲 Paga a través del siguiente QR o número: ${LEMON_CASH_NUMBER}
+${LEMON_QR_IMAGE ? `<img src="${LEMON_QR_IMAGE}" alt="QR de Lemon Cash" width="200" height="200">` : ''}
 Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
 ----
 💸 Datos de Pago (Bim)
