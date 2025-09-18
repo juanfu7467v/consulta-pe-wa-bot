@@ -30,7 +30,13 @@ let welcomeMessage = "¡Hola! Soy el asistente virtual de Consulta PE. ¿Cómo p
 
 // Nuevo: Token para consultas
 const API_TOKEN_5_SOLES = process.env.API_TOKEN_5_SOLES;
-const WHATSAPP_BOT_NUMBER = "51966995223@s.whatsapp.net"; // Número para enviar comandos de 10 soles
+const WHATSAPP_BOT_NUMBER = "51929008609@s.whatsapp.net"; // Número para enviar comandos de 10 soles
+
+// Nuevas variables de entorno para los números de los encargados y pagos
+const ADMIN_NUMBERS_ENV = process.env.ADMIN_NUMBERS;
+const ADMIN_NUMBERS = ADMIN_NUMBERS_ENV ? ADMIN_NUMBERS_ENV.split(',').map(n => `${n.trim()}@s.whatsapp.net`) : [];
+const YAPE_NUMBER = process.env.YAPE_NUMBER;
+const BIM_NUMBER = process.env.BIM_NUMBER;
 
 // Configuración de prompts
 let GEMINI_PROMPT = `
@@ -96,7 +102,7 @@ Número para pagar
 ¿El de 200?
 Respuesta:
 ¡Excelente elección, leyenda!
-📲 Yapea al 929 008 609
+📲 Yapea al ${YAPE_NUMBER}
 📛 Titular: José R. Cubas
 Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
 ---
@@ -110,7 +116,7 @@ Número para pagar
 ¿Cómo se llama el que recibe?
 Respuesta:
 ¡Excelente elección, leyenda!
-📲 Yapea al 929 008 609
+📲 Yapea al ${YAPE_NUMBER}
 📛 Titular: José R. Cubas
 Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
 ----
@@ -124,7 +130,7 @@ Número para pagar
 ¿Cómo se llama el que recibe?
 Respuesta:
 ¡Excelente elección, leyenda!
-📲 Yapea al 965993244
+📲 Yapea al ${BIM_NUMBER}
 📛 Titular: José R. Cubas
 Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
 ----
@@ -192,7 +198,7 @@ Frases que reconoce:
 ¿Quiero consultar vehículos en surnamp asociados a un DNI?
 Respuesta:
 Claro, puedo realizar la búsqueda por ti. 
-El servicio para esas consultas cuesta S/10. Haz el pago por Yape al 929008609 a nombre de José R. Cubas. Después, envíame el comprobante y el DNI o los datos a consultar. En breve yo te enviaré los resultados.
+El servicio para esas consultas cuesta S/10. Haz el pago por Yape al ${YAPE_NUMBER} a nombre de José R. Cubas. Después, envíame el comprobante y el DNI o los datos a consultar. En breve yo te enviaré los resultados.
 ---
 📊 Consultas que no están dentro de la app, y tienen el costo de 10 soles.
 Frases que reconoce:
@@ -226,7 +232,7 @@ Consultas RENIEC
 ¿Qué otra cosa se puede hacer?
 Respuesta:
 ¡Claro que sí, máquina! 💼
-El servicio para esas consultas cuesta S/10. Haz el pago por Yape al 929008609 a nombre de José R. Cubas. Después, envíame el comprobante y el DNI o los datos a consultar. En breve yo te enviaré los resultados.
+El servicio para esas consultas cuesta S/10. Haz el pago por Yape al ${YAPE_NUMBER} a nombre de José R. Cubas. Después, envíame el comprobante y el DNI o los datos a consultar. En breve yo te enviaré los resultados.
 ---
 💳 Métodos de Pago
 Frases que reconoce:
@@ -511,8 +517,6 @@ La paleta de colores de consulta es la siguiente
 // Respuestas locales y menús
 let respuestasPredefinidas = {};
 
-const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
-
 // Nuevo: Configuración de OpenAI para análisis de imágenes
 const openaiApi = axios.create({
     baseURL: 'https://api.openai.com/v1',
@@ -631,8 +635,11 @@ try {
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
 const forwardToAdmins = async (sock, message, customerNumber) => {
-  const adminNumbers = [ADMIN_NUMBER];
-  const forwardedMessage = `*REENVÍO AUTOMÁTICO DE SOPORTE*
+    if (ADMIN_NUMBERS.length === 0) {
+        console.warn("ADVERTENCIA: No hay números de administrador configurados.");
+        return;
+    }
+    const forwardedMessage = `*REENVÍO AUTOMÁTICO DE SOPORTE*
   
 *Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
 
@@ -641,11 +648,11 @@ ${message}
   
 *Enviado por el Bot para atención inmediata.*`;
 
-  for (const admin of adminNumbers) {
-    if (admin) {
-      await sock.sendMessage(admin, { text: forwardedMessage });
+    for (const admin of ADMIN_NUMBERS) {
+        if (admin) {
+            await sock.sendMessage(admin, { text: forwardedMessage });
+        }
     }
-  }
 };
 
 // ------------------- Crear Socket -------------------
@@ -795,37 +802,34 @@ const createAndConnectSocket = async (sessionId) => {
           await sock.sendPresenceUpdate("composing", from);
           await sock.sendMessage(from, { text: "Estoy en proceso de aprendizaje, esto necesita intervención humana. Recibirás una respuesta lo antes posible." });
           
-          // Reenviar el mensaje original al admin
-          const adminNumbers = [ADMIN_NUMBER];
-          for (const admin of adminNumbers) {
-              if (admin) {
-                  let forwardedMessage = `*REQUERIMIENTO MANUAL - RECONOCIMIENTO FALLIDO*
+          if (ADMIN_NUMBERS.length > 0) {
+            for (const admin of ADMIN_NUMBERS) {
+                let forwardedMessage = `*REQUERIMIENTO MANUAL - RECONOCIMIENTO FALLIDO*
 Cliente: wa.me/${from.replace("@s.whatsapp.net", "")}
 Tipo de problema: Archivo no reconocido o consulta compleja.
 Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atención manual.`;
-
-                  await sock.sendMessage(admin, { text: forwardedMessage });
-                  
-                  // Reenviar el archivo original si existe
-                  if (msg.message.imageMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
-                      await sock.sendMessage(admin, { image: mediaBuffer });
-                  } else if (msg.message.videoMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.videoMessage, 'video');
-                      await sock.sendMessage(admin, { video: mediaBuffer });
-                  } else if (msg.message.documentMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.documentMessage, 'document');
-                      await sock.sendMessage(admin, { document: mediaBuffer });
-                  }
-              }
-          }
-          continue; // Detener procesamiento para este mensaje
+                await sock.sendMessage(admin, { text: forwardedMessage });
+                
+                // Reenviar el archivo original si existe
+                if (msg.message.imageMessage) {
+                    const mediaBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+                    await sock.sendMessage(admin, { image: mediaBuffer });
+                } else if (msg.message.videoMessage) {
+                    const mediaBuffer = await downloadContentFromMessage(msg.message.videoMessage, 'video');
+                    await sock.sendMessage(admin, { video: mediaBuffer });
+                } else if (msg.message.documentMessage) {
+                    const mediaBuffer = await downloadContentFromMessage(msg.message.documentMessage, 'document');
+                    await sock.sendMessage(admin, { document: mediaBuffer });
+                }
+            }
+        }
+        continue; // Detener procesamiento para este mensaje
       }
       
       if (!body) continue;
 
       // ... Lógica de comandos de administrador (mantenida) ...
-      const is_admin = from.startsWith(ADMIN_NUMBER);
+      const is_admin = ADMIN_NUMBERS.includes(from);
       if (is_admin && body.startsWith("/")) {
         const parts = body.substring(1).split("|").map(p => p.trim());
         const command = parts[0].split(" ")[0];
@@ -950,11 +954,8 @@ Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atenci
       if (userRequest) {
           // El usuario está en un flujo de consulta paga
           if (body.toLowerCase().includes("comprobante de pago")) {
-              const adminNumbers = [ADMIN_NUMBER];
-              
-              // Reenviar el comprobante a los administradores
-              for (const admin of adminNumbers) {
-                  if (admin) {
+              if (ADMIN_NUMBERS.length > 0) {
+                  for (const admin of ADMIN_NUMBERS) {
                       await sock.sendMessage(admin, {
                           text: `*COMPROBANTE RECIBIDO*
 Cliente: wa.me/${from.replace("@s.whatsapp.net", "")}
@@ -980,8 +981,8 @@ Comando/Datos: ${userRequest.command}`
       }
 
       // Si el usuario solicita una consulta paga, iniciar el flujo
-      const pay5Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+de\s+la\s+app|en\s+la\s+app|por\s+5\s+soles)?/i;
-      const pay10Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+en\s+pdf|en\s+imagen|por\s+10\s+soles)?/i;
+      const pay5Regex = new RegExp(`^(quiero|necesito|solicito|dame|buscame) (.*)(?:\\s+de\\s+la\\s+app|en\\s+la\\s+app|por\\s+5\\s+soles)?`, 'i');
+      const pay10Regex = new RegExp(`^(quiero|necesito|solicito|dame|buscame) (.*)(?:\\s+en\\s+pdf|en\\s+imagen|por\\s+10\\s+soles)?`, 'i');
       
       let match5 = body.match(pay5Regex);
       let match10 = body.match(pay10Regex);
@@ -994,7 +995,7 @@ Comando/Datos: ${userRequest.command}`
           
           if (data) {
               userRequestStates.set(from, { price: 5, command: command, data: data });
-              await sock.sendMessage(from, { text: `Claro, para realizar esa búsqueda el costo es de *S/5.00*. Por favor, Yapea al *929008609* y envíame el comprobante para proceder.` });
+              await sock.sendMessage(from, { text: `Claro, para realizar esa búsqueda el costo es de *S/5.00*. Por favor, Yapea al *${YAPE_NUMBER}* y envíame el comprobante para proceder.` });
               continue;
           }
       }
@@ -1007,7 +1008,7 @@ Comando/Datos: ${userRequest.command}`
 
           if (data) {
               userRequestStates.set(from, { price: 10, command: command, data: data });
-              await sock.sendMessage(from, { text: `Entendido. Para obtener la información que necesitas en *imagen o PDF*, el costo es de *S/10.00*. Realiza tu pago por Yape al *929008609* y envíame el comprobante para que el bot proceda con la búsqueda.` });
+              await sock.sendMessage(from, { text: `Entendido. Para obtener la información que necesitas en *imagen o PDF*, el costo es de *S/10.00*. Realiza tu pago por Yape al *${YAPE_NUMBER}* y envíame el comprobante para que el bot proceda con la búsqueda.` });
               continue;
           }
       }
