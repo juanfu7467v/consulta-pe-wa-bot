@@ -586,7 +586,7 @@ const consumirGemini = async (prompt, history) => {
       console.log("GEMINI_API_KEY no está configurada.");
       return null;
     }
-    const model = "gemini-1.5-flash";
+    const model = "gemini-1.5-pro"; // <-- Actualizado a gemini-1.5-pro
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
     
     // Concatena el historial de conversación en el prompt
