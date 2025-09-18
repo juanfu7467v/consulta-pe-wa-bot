@@ -945,18 +945,34 @@ Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atenci
       
       // Lógica para detectar el tipo de solicitud del usuario
       const userRequest = userRequestStates.get(from);
-      if (userRequest) {
-          // El usuario está en un flujo de consulta paga
+      
+      // Nuevo: Manejar el flujo de compra de créditos
+      const creditPacks = {
+        "10": 60,
+        "20": 125,
+        "50": 330,
+        "100": 700,
+        "200": 1500
+      };
+      
+      const creditMatch = body.toLowerCase().match(/(\d+)\s*cr[eé]ditos?/);
+      
+      if (creditMatch && creditPacks[creditMatch[1]]) {
+        userRequestStates.set(from, { type: 'credit_purchase', amount: creditMatch[1] });
+        await sock.sendMessage(from, { text: "¡Excelente elección, leyenda!\n📲 Yapea al 929 008 609\n📛 Titular: José R. Cubas\nCuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque." });
+        continue;
+      }
+
+      if (userRequest && userRequest.type === 'credit_purchase') {
           if (body.toLowerCase().includes("comprobante de pago")) {
-              
               // Reenviar el comprobante a los administradores
               for (const admin of ADMIN_NUMBERS) {
                   if (admin) {
                       await sock.sendMessage(admin, {
-                          text: `*COMPROBANTE RECIBIDO*
+                          text: `*COMPROBANTE RECIBIDO (CRÉDITOS)*
 Cliente: wa.me/${from.replace("@s.whatsapp.net", "")}
-Tipo de pago: ${userRequest.price} soles
-Comando/Datos: ${userRequest.command}`
+Paquete de créditos: ${creditPacks[userRequest.amount]}
+Monto: S/ ${userRequest.amount}`
                       });
                       if (msg.message.imageMessage) {
                           const mediaBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
@@ -976,7 +992,7 @@ Comando/Datos: ${userRequest.command}`
           }
       }
 
-      // Si el usuario solicita una consulta paga, iniciar el flujo
+      // Lógica existente para consultas pagas (mantenida pero ajustada)
       const pay5Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+de\s+la\s+app|en\s+la\s+app|por\s+5\s+soles)?/i;
       const pay10Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+en\s+pdf|en\s+imagen|por\s+10\s+soles)?/i;
       
@@ -990,7 +1006,7 @@ Comando/Datos: ${userRequest.command}`
           const data = parts.slice(1).join(" ");
           
           if (data) {
-              userRequestStates.set(from, { price: 5, command: command, data: data });
+              userRequestStates.set(from, { price: 5, command: command, data: data, type: 'search' });
               await sock.sendMessage(from, { text: `Claro, para realizar esa búsqueda el costo es de *S/5.00*. Por favor, Yapea al *929008609* y envíame el comprobante para proceder.` });
               continue;
           }
@@ -1003,7 +1019,7 @@ Comando/Datos: ${userRequest.command}`
           const data = parts.slice(1).join(" ");
 
           if (data) {
-              userRequestStates.set(from, { price: 10, command: command, data: data });
+              userRequestStates.set(from, { price: 10, command: command, data: data, type: 'search' });
               await sock.sendMessage(from, { text: `Entendido. Para obtener la información que necesitas en *imagen o PDF*, el costo es de *S/10.00*. Realiza tu pago por Yape al *929008609* y envíame el comprobante para que el bot proceda con la búsqueda.` });
               continue;
           }
