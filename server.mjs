@@ -1,3 +1,4 @@
+ 
 // server.mjs
 import express from "express";
 import cors from "cors";
@@ -586,7 +587,7 @@ const consumirGemini = async (prompt, history) => {
       console.log("GEMINI_API_KEY no está configurada.");
       return null;
     }
-    const model = "gemini-1.5-pro"; // <-- Actualizado a gemini-1.5-pro
+    const model = "gemini-1.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
     
     // Concatena el historial de conversación en el prompt
@@ -1186,3 +1187,4 @@ app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo �
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
+
