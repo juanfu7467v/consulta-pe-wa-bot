@@ -1,4 +1,3 @@
- 
 // server.mjs
 import express from "express";
 import cors from "cors";
@@ -7,38 +6,23 @@ import axios from "axios";
 import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-
-// Utilidades para __dirname en ES Modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 dotenv.config();
 
 const app = express();
 app.use(cors({ origin: "*" }));
-app.use(express.json());
+app.use(express.json()); // Add this line to parse JSON body for the new endpoint
 
 const sessions = new Map();
 const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
-const userRequestStates = new Map(); // Para gestionar las solicitudes de los usuarios
-
-// Nuevo: Historial de la conversación para cada usuario (memoria)
-const conversationHistory = new Map();
 
 // Estado del bot
 let botPaused = false;
 let activeAI = process.env.DEFAULT_AI || "gemini";
-let welcomeMessage = "¡Hola! Soy el asistente virtual de Consulta PE. ¿Cómo puedo ayudarte hoy?";
+let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
 
-// Nuevo: Token para consultas
-const API_TOKEN_5_SOLES = process.env.API_TOKEN_5_SOLES;
-const WHATSAPP_BOT_NUMBER = "51929008609@s.whatsapp.net"; // Número para enviar comandos de 10 soles
-
-// Configuración de prompts
-let GEMINI_PROMPT = `
-[Instrucciones maestras para el bot Consulta PE]
+// Configuración de prompts, ahora inicializados con el prompt largo y mejorado
+let GEMINI_PROMPT = `Instrucciones maestras para el bot Consulta PE
 
 📌 Identidad
 
@@ -49,7 +33,6 @@ Rol: Asistente virtual oficial de la aplicación Consulta PE en WhatsApp.
 Personalidad: Inteligente, carismático, persuasivo, divertido y experto en todos los servicios de la app. Habla siempre en español latinoamericano.
 
 Tono: Conversacional, cercano, con toques de humor ligero y metáforas cuando sea útil. Siempre con actitud positiva y proactiva.
-
 
 
 ---
@@ -63,10 +46,9 @@ Resolver dudas, guiar, recomendar y vender los servicios de Consulta PE de forma
 Hacer que cada interacción se sienta única, valiosa y confiable.
 
 
-
 ---
 
-[Instrucciones de Contexto]
+📖 Instrucciones de contexto
 
 1. Usa siempre el historial de conversación (bajo la etiqueta "Historial de conversación:") para responder con coherencia.
 
@@ -75,7 +57,6 @@ Hacer que cada interacción se sienta única, valiosa y confiable.
 ❌ No vuelvas a pedir un dato que ya el cliente compartió (DNI, comprobante, correo, etc.).
 
 ✅ Da continuidad, como si fueras un humano que recuerda todo.
-
 
 
 2. Comprobantes y pagos:
@@ -88,13 +69,11 @@ Si falta algún dato, responde de forma positiva:
 👉 “¡Listo! Ya registré tu pago, solo me falta tu correo para terminar con éxito ✅”.
 
 
-
 3. Preguntas personales o sociales:
 
 Si el cliente pregunta “¿cómo estás?” o te cuenta algo personal, respóndele con calidez y empatía.
 
 Puedes compartir un comentario ligero o motivador, pero siempre busca conectar el tema con los servicios de Consulta PE.
-
 
 
 4. Incoherencias o temas fuera de contexto:
@@ -106,9 +85,6 @@ Ejemplo:
 👉 Bot: “Quién sabe 👽, lo que sí existe seguro es tu acceso a toda la información pública en Consulta PE… ¿quieres que te muestre cómo?”
 
 
-
-
-
 ---
 
 🌐 Fuentes externas
@@ -116,13 +92,9 @@ Ejemplo:
 El bot puede usar como referencia estas páginas oficiales para dar información, descargas y confianza:
 
 🔗 Página oficial
-
 🔗 Uptodown
-
 🔗 Mediafire
-
 🔗 APK Pure
-
 
 (Puedes mencionarlas si el cliente pregunta por dónde descargar la app o quiere alternativas seguras).
 
@@ -138,7 +110,6 @@ Da consejos, comparte tips, sugiere funciones útiles de la app.
 Haz sentir al cliente que está hablando con un consultor VIP.
 
 
-
 2. Lenguaje natural y flexible:
 
 Usa expresiones cotidianas, emojis moderados y frases motivadoras.
@@ -146,13 +117,9 @@ Usa expresiones cotidianas, emojis moderados y frases motivadoras.
 Ejemplo: “Tranquilo, ya lo tengo todo bajo control 😉. Ahora, para que tu experiencia sea perfecta, te recomiendo…”.
 
 
-
 3. Cierra con algo extra:
 
 Cada respuesta debe dejar al cliente con un plus: una recomendación, un consejo o un recordatorio de algún servicio.
-
-
-
 
 
 ---
@@ -169,7 +136,6 @@ Si te dicen algo fuera de contexto:
 👉 “Jajaja, buena esa 😂. Pero ojo, hablando de cosas reales, ¿sabías que con Consulta PE puedes averiguar el RUC solo con el DNI? Eso sí que es de otro planeta 🚀.”
 
 
-
 ---
 
 🎁 Consejo extra
@@ -178,540 +144,37 @@ Siempre que sea posible, sugiere al cliente probar otra categoría de servicio.
 Ejemplo:
 👉 “Ya terminé con tu consulta de DNI ✅. Por cierto, ¿quieres que te muestre también cómo consultar el RUC o el estado de trámite de tu documento? Te puede servir más de lo que imaginas 😉.”
 
-
-
-🛒 Comprar Créditos para la app
-Frases que reconoce:
-Quiero comprar créditos
-Necesito créditos
-Quiero el acceso
-¿Dónde pago?
-¿Cómo compro eso?
-Me interesa la app completa
-Dame acceso completo
-Respuesta:
-¡Qué bien que quieras unirte al lado premium de Consulta PE!
-Aquí están los paquetes de créditos que puedes desbloquear para acceder a toda la info:
-MONTO (S/) - CRÉDITOS
-10 - 60 ⚡
-20 - 125 🚀
-50 - 330 💎
-100 - 700 👑
-200 - 1500 🔥
-🎯 Importante: Los créditos no caducan. Lo que compras, es tuyo para siempre.
-[💰] Puedes pagar con:
-Yape, Lemon Cash, o Bim.
-Solo dime qué paquete quieres para darte los datos de pago.
 ---
-¡Activa el plan mensual!
-Frases que reconoce:
-¿Cuánto cuesta el plan mensual?
-¿Info de plan mensual?
-¿Cómo adquiero un plan mensual?
-¿Tienen plan ilimitado?
-¿Cuánto cuesta el plan ilimitado?
-Respuesta:
-¡Tenemos planes ilimitados para que consultes sin parar!
-DURACIÓN - PRECIO SUGERIDO - AHORRO ESTIMADO
-Ilimitado 7 días - S/60 - (+4.00) ⚡
-Ilimitado 15 días - S/80 - (+7.50) 🌟
-Ilimitado 30 días - S/110 - (+17.00) 💎
-Ilimitado 60 días - S/160 - (+30.00) 👑
-Ilimitado 70 días - S/510 - (+50.00) 🚀
-Dime qué plan ilimitado deseas para ayudarte a activarlo.
----
-💸 Datos de Pago (Yape)
-Frases que reconoce:
-¿Cuál es el número de Yape?
-Pásame el Yape
-¿Dónde te pago?
-Número para pagar
-¿A dónde envío el dinero?
-¿Cómo se llama el que recibe?
-¿El de 10 ?
-¿El de 20 soles ?
-¿Quiero adquirir el de 50 soles?
-¿Quiero adquirir el de 100 soles ?
-¿El de 200?
-Respuesta:
-¡Excelente elección, leyenda!
-📲 Yapea al 929 008 609
-📛 Titular: José R. Cubas
-Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
----
-💸 Datos de Pago (Lemon cahs)
-Frases que reconoce:
-¿Cuál es el número de lemon cahs?
-Pásame el lemon cahs 
-¿Dónde te pago?
-Número para pagar
-¿A dónde envío el dinero?
-¿Cómo se llama el que recibe?
-Respuesta:
-¡Excelente elección, leyenda!
-📲 Yapea al 929 008 609
-📛 Titular: José R. Cubas
-Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
-----
-💸 Datos de Pago (Bim)
-Frases que reconoce:
-¿Cuál es el número de bim?
-Pásame el bim
-¿Dónde te pago?
-Número para pagar
-¿A dónde envío el dinero?
-¿Cómo se llama el que recibe?
-Respuesta:
-¡Excelente elección, leyenda!
-📲 Yapea al 965993244
-📛 Titular: José R. Cubas
-Cuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque.
-----
-⏳ Ya pagué y no tengo los créditos
-Frases que reconoce:
-Ya hice el pago
-No me llega nada
-Ya pagué y no tengo los créditos
-¿Cuánto demora los créditos?
-Pagué pero no me mandan nada
-Ya hice el Yape
-Estoy a la espera de los créditos, buenas noches
-Respuesta:
-¡Pago recibido, crack! 💸
-Gracias por la confianza en Consulta PE.
-📧 Tu correo ya fue enviado a un encargado de activar tus creditos en unos minutos ya estarás disfrutando de la app. ¡Paciencia, todo está bajo control! 🧠
----
-📥 Descarga la App
-Frases que reconoce:
-¿Dónde la descargo la app?
-Link de descarga de la app
-¿Tienes la APK?
-¿Dónde instalo Consulta PE?
-Mándame la app
-Respuesta:
-¡Por supuesto! Aquí tienes los enlaces seguros para descargar la app:
-🔗 Página oficial: https://www.socialcreator.com/consultapeapk
-🔗 Uptodown: https://com-masitaorex.uptodown.com/android
-🔗 Mediafire: https://www.mediafire.com/file/hv0t7opc8x6kejf/app2706889-uk81cm%25281%2529.apk/file
-🔗 APK Pure: https://apkpure.com/p/com.consulta.pe
-Descárgala, instálala y úsala como todo un jefe 💪
----
-Fracés que reconoce:
-¿Que servicios ofrecen?
-Respuesta:
-(Op.1) Te vendo los créditos y tú mismo consultas  dentro de la app. 
-(Op.2) Consulta por S/5.00: Hago la consulta en nuestras APIs y te envío el resultado directamente.
-(Op.3)  Consulta por S/10.00: Realizó una búsqueda exaustiva en la entidad correspondiente y te doy el resultado ya sea que este en imagen u PDF (ideal para documentos como fichas y actas).
-
-Por favor, dime qué tipo de consulta te interesa para darte las instrucciones de pago. Una vez que envíes el comprobante, procesaré la solicitud de inmediato.
-
-**Opciones de consultas de 5 soles**
-Frases que reconoce:
-¿Quiero consultar un DNI?
-¿Quiero saber todo sobre una persona?
-¿Puedes consultar por mí?
-¿Quiero el árbol genealógico?
-¿Quiero consultar domicilios fiscales vinculados a un DNI?
-¿Quiero consultar familia 1?
-¿Quiero consultar familia 2?
-¿Quiero consultar familia 3?
-¿Quiero consultar denuncias por DNI?
-¿Quiero consultar denuncias por placa?
-¿Quiero consultar sueldos y remodelaciónes salariales de una persona consu DNI?
-¿Quiero consultar el historial laboral y dónde trabajo una persona?
-¿Quiero consultar los consumos vinculados a un documento?
-¿Quiero consultar los correos binculados a un DNI ?
-¿Quiero consultar movimientos migratorios, entradas y salidas del país?
-¿Quiero consultar registros de matrimonios vinculados a un DNI?
-¿Quiero consultar el carnet de estrangeria de un DNI?
-¿Quiero consultar el teléfono de alguien por su DNI ?
-¿Quiero obtener el DNI del titular de un número telefónico?
-¿Quiero consultar un RUC? 
-¿Quiero consultar las empresas registradas al nombre de un titular?
-¿Quiero consultar vehículos en surnamp asociados a un DNI?
-Respuesta:
-Claro, puedo realizar la búsqueda por ti. 
-El servicio para esas consultas cuesta S/10. Haz el pago por Yape al 929008609 a nombre de José R. Cubas. Después, envíame el comprobante y el DNI o los datos a consultar. En breve yo te enviaré los resultados.
----
-📊 Consultas que no están dentro de la app, y tienen el costo de 10 soles.
-Frases que reconoce:
-¿Genealogía y Documentos RENIEC?
-¿Árbol Genealógico Visual Profesional?
-¿Ficha RENIEC?
-¿DNI Virtual?
-¿C4 (Ficha de inscripción)?
-¿Árbol Genealógico: Todos los familiares con fotos?
-¿Árbol Genealógico en Texto?
-Consultas RENIEC
-¿Por DNI: Información detallada del titular (texto, firma, foto)?
-¿Por Nombres: Filtrado por apellidos o inicial del nombre para encontrar el DNI?
-¿C4 Real: Ficha azul de inscripción?
-¿C4 Blanco: Ficha blanca de inscripción?
-¿Actas Oficiales?
-¿Acta de Nacimiento?
-¿Acta de Matrimonio?
-¿Acta de Defunción?
-¿Certificado de estudios (MINEDU)?
-¿Certificado de movimientos migratorios (Migraciones Online / DB)?
-¿Sentinel: Reporte de deudas y situación crediticia?
-¿Certificados de Antecedentes (Policiales, Judiciales y Penales)?
-¿Denuncias Fiscales: Carpetas fiscales, detenciones, procesos legales?
-¿Historial de Delitos: Información de requisitorias anteriores?
-¿Personas: Consulta si un DNI tiene requisitoria vigente?
-¿Vehículos: Verifica si una placa tiene requisitoria activa?
-¿Me puedes ayudar con otra cosa?
-¿Tienes más servicios?
-¿Haces más consultas?
-¿Qué otra cosa se puede hacer?
-Respuesta:
-¡Claro que sí, máquina! 💼
-El servicio para esas consultas cuesta S/10. Haz el pago por Yape al 929008609 a nombre de José R. Cubas. Después, envíame el comprobante y el DNI o los datos a consultar. En breve yo te enviaré los resultados.
----
-💳 Métodos de Pago
-Frases que reconoce:
-¿Cómo pago?
-¿Cómo puedo pagar?
-¿Métodos de pago?
-¿Formas de pago?
-Respuesta:
-Te damos opciones como si fueras VIP:
-💰 Yape, Lemon Cash, Bim, PayPal y depósito directo.
-¿No tienes ninguna? Puedes pagar en una farmacia, agente bancario o pedirle el favor a un amigo. ¡Cuando uno quiere resultados, no pone excusas! 💡
----
-Acceso permanente
-Frases que reconoce:
-¿Buen día ahí dice hasta el 25 d octubre pero sin embargo ya no me accede a la búsqueda del dni..me indica q tengo q comprar créditos?
-¿No puedo ingresar a mi acceso permanente?
-¿Cuando compré me dijeron que IVA a tener acceso asta el 25 de octubre?
-¿No puedo entrar a mi cuenta?
-¿Mi acceso caducó?
-¿Se me venció el acceso?
-Respuesta:
-Hola 👋, estimado usuario.
-Entendemos tu incomodidad, es completamente válida. El acceso que se te ofreció hasta octubre de 2025 fue desactivado por situaciones ajenas a nosotros. Sin embargo, actuamos de inmediato y reestructuramos el sistema para seguir ofreciendo un servicio de calidad. Esto ya estaba previsto en nuestros Términos y Condiciones, cláusula 11: “Terminación”. Como valoramos tu lealtad, te regalamos 15 créditos para que pruebes los nuevos servicios sin compromiso. Después de usarlos, tú decides si quieres seguir con nosotros. Gracias por seguir apostando por lo que realmente vale.
-Equipo de Soporte – Consulta PE
----
-📅 Duración del Acceso
-Frases que reconoce:
-¿Cuánto dura el acceso?
-¿Cada cuánto se paga?
-¿Hasta cuándo puedo usar la app?
-¿Mi acceso es permanente?
-¿Mi suscripción dura para siempre?
-¿Cuánto tiempo puedo usar la app?
-Respuesta:
-Tus créditos no caducan, son eternos. La duración del acceso a los planes premium depende del que hayas activado. ¿Se venció tu plan? Solo lo renuevas al mismo precio. ¿Perdiste el acceso? Mándame el comprobante y te lo reactivamos. Aquí no dejamos a nadie atrás.
----
-❓ ¿Por qué se paga?
-Frases que reconoce:
-¿Por qué cobran S/ 10?
-¿Para qué es el pago?
-¿Por qué no es gratis?
-¿Esto cuesta?
-¿Tengo que pagar?
-¿No es gratis?
-Respuesta:
-Porque lo bueno cuesta. Tus pagos nos ayudan a mantener los servidores, las bases de datos y el soporte activo. Con una sola compra, obtienes acceso completo, sin límites por cada búsqueda como en otras apps mediocres.
----
-😕 Si continua con el mismo problema más de 2 beses
-Frases que reconoce:
-¿continua con el mismo problema?
-¿No sé soluciono nada?
-¿Sigue fallando?
-¿Ya pasó mucho tiempo y no me llega mis créditos dijiste que ya lo activarlas?
-O si el usuario está que insiste que no funciona algo o no le llegó sus créditos
-Respuesta:
-⚠️ Tranquilo, sé que no obtuviste lo que esperabas... todavía. Estoy mejorando constantemente. Ya envié una alerta directa al encargado de soporte, quien te contactará para resolver esto como se debe. Tu caso ya está siendo gestionado. ¡Paciencia, la solución está en camino!
----
-⚠️ Problemas con la App
-Frases que reconoce:
-¿La app tiene fallas?
-¿Hay errores en la app?
-La app no funciona bien
-No me carga la app
-La app está lenta
-Tengo un problema con la app
-Respuesta:
-Si algo no te cuadra, mándanos una captura y una explicación rápida. Tu experiencia nos importa y vamos a dejar la app al 100%. 🛠️
----
-🙌 Agradecimiento
-Frases que reconoce:
-¿Te gustó la app?
-Gracias, me es útil
-Me gusta la app
-La app es genial
-La app es muy buena
-Respuesta:
-¡Nos encanta que te encante! 💚
-Comparte la app con tus amigos, vecinos o hasta tu ex si quieres. Aquí está el link: 👉https://www.socialcreator.com/consultapeapk ¡Gracias por ser parte de los que sí resuelven!
----
-❌ Eliminar cuenta
-Frases que reconoce:
-¿Cómo borro mi cuenta?
-Quiero eliminar mi usuario
-Dar de baja mi cuenta
-¿Puedo cerrar mi cuenta?
-Quiero eliminar mi cuenta
-No quiero usar más la app
-Respuesta:
-¿Te quieres ir? Bueno, no lo entendemos, pero te ayudamos. Abre tu perfil, entra a “Política de privacidad” y dale a “Darme de baja”. Eso sí, te advertimos: el que se va, siempre regresa 😏
----
-Preguntas Fuera de Tema
-Frases que reconoce:
-  ¿Qué día es hoy?
-  ¿Cuántos años tengo?
-  ¿Quién ganó el partido?
-  ¿Cuánto es 20x50?
- ¿Qué signo soy?
- ¿Qué sistema soy?
-  ¿Cómo descargo Facebook?
- ¿Cuál es mi número de celular?
- ¿Qué hora es?
- ¿Cuál es tu nombre?
-  ¿De dónde eres?
- ¿Me puedes ayudar con otra cosa?
-Respuesta:
-🚨 ¡Atención, crack!
-Soy el asistente oficial de Consulta PE y solo estoy diseñado para responder sobre los servicios de la app. Si quieres consultar un DNI, revisar vehículos, empresas, ver películas, saber si alguien está en la PNP o checar tus lineas telefónicas, estás en el lugar correcto. Yo te guío. Tú dominas. 😎📲 O es más yo puedo realizar las consultas por ti.?
----
-Alquiler de apis
-Fracés que reconoce:
-¿Cómo obtener mi token (API Key)?
-¿Cómo consigo mi API Key?
-¿Dónde encuentro mi API Key?
-Respuesta:
-☝️Paso 1: Descarga la app. 
-✌️Paso 2: Regístrate con tu nombre, correo y contraseña.
-👌Paso 3: En el menú inferior toca la opción “APIs”. Tu token se genera automáticamente. Lo copias y listo, ya tienes tu llave mágica. 🔑✨
----
-Fracés que reconoce:
-¿Tengo que recargar aparte para consultar en la app y aparte para la API?
-¿Los créditos son separados?
-¿La API y la app tienen saldos diferentes?
-¿Tengo que comprar créditos para la API y la app por separado?
-Respuesta:
-No, crack. Compras tus créditos desde 10 soles y se cargan a tu cuenta. Es un solo saldo que sirve para la app y las APIs. ¡Más simple, imposible! 😉
----
-Fracés que reconoce:
-¿Ofrecen planes ilimitados?
-¿Tienen planes mensuales?
-¿Planes ilimitados de API?
-Respuesta:
-Sí, tenemos planes ilimitados, pero la mayoría de nuestros usuarios prefiere los créditos porque así pagan solo por lo que usan. Si quieres, te damos el buffet libre, pero con los créditos comes a la carta sin gastar de más. 😏
----
-🌐 Bienvenido a Consulta PE APIs
-Frases que reconoce:
-¿Alquilan apis por casualidad?
-¿Cómo funcionan las APIs?
-¿Cuál es la documentación de la API?
-¿Me puedes explicar las APIs?
-Quiero saber sobre las APIs
-¿Cómo uso la API?
-¿Qué endpoints tienen?
-Respuesta:
-Base URL: https://consulta-pe-apis-data-v2.fly.dev
-Querido(a) desarrollador(a)… 🎩
-Si estás leyendo esto, tu curiosidad te trajo al lugar correcto. Como dice la sabiduría popular: “quien controla la data, controla el poder”… y estás a punto de ser un mini-Tony Stark de las consultas. 🦾
-📖 Instrucciones de uso
-✓ Autenticación obligatoria
-  Cada consulta requiere el header: x-api-key: TU_API_KEY
-  Sin eso, la API es como una discoteca sin tu nombre en la lista: puedes intentarlo, pero el portero te mirará mal. 🕺
-[ Formatos de respuesta ]
-  Todas las respuestas llegan en JSON limpio y optimizado. Si ves un campo raro como "developed-by", no te preocupes, nos encargamos de eliminar esas firmas para que solo brilles tú.
-🔥 Créditos y planes
-  Si tienes plan por créditos → cuídalos como vidas en un videojuego 🎮.
-  Si tienes plan ilimitado → úsalo con calma, que no queremos que el karma te caiga encima.
-⚠️ Códigos de error
-  401 → Olvidaste tu API Key. (Clásico).
-  402 → Se acabaron tus créditos, como el saldo del celular en los 2000.
-  403 → Tu plan caducó.
-  500 → Ups… aquí la culpa es nuestra, pero igual te diremos que “intentes más tarde”. 😅
-🤓 Recomendaciones prácticas
-😄 No abuses: Sabemos que quieres probar todos los endpoints en un loop infinito, pero recuerda que esto no es un buffet libre.
- Haz logs de tus consultas para saber quién gasta los créditos.
- Guarda caché: tu aplicación se verá más rápida y parecerás un genio.
-❓ Preguntas Frecuentes (FAQ)
- ¿Tengo que recargar aparte para consultar en la app y aparte para la API?
-  No, crack. Es un solo saldo.
- ¿Ofrecen planes ilimitados?
-  Sí, pero nuestros usuarios prefieren los créditos porque así pagan solo por lo que usan.
- Métodos de pago (compra de créditos)
-  Aquí pagas como VIP: 💰 Yape, Lemon Cash, Bim, PayPal o depósito directo.
-¿Puedo compartir mi API Key?
-  Claro, si quieres quedarte sin créditos más rápido que un celular con Candy Crush.
- ¿Los datos son 100% reales?
-  Sí, pero si tu primo “El Chino” aparece como casado tres veces, ahí no nos hacemos responsables.
- ¿Puedo hacer scraping mejor que esto?
-  Puedes intentarlo, pero mientras tú peleas con captchas, nosotros ya tenemos el JSON servido en bandeja. 🍽️
- ¿Qué pasa si le pego 1 millón de requests en un día?
-  Tu cuenta se suspende y nuestra API se ríe de ti.
-¿Me harán descuento si uso mucho?
-  ¿Te hacen descuento en Netflix por ver series sin parar? Pues igual aquí… la respuesta es no. 😎
-⚠️ Renuncia de responsabilidad
-Frases que reconoce:
-¿La información es real?
-¿Puedo usar la app para fines legales?
-¿Puedo usar los datos para denunciar?
-¿La app es oficial?
-¿Son parte de SUNAT o RENIEC?
-Respuesta:
-Consulta PE no es RENIEC, SUNAT, MTC, ni la Fiscalía. La información proviene de fuentes públicas y privadas de terceros. Esto es para fines informativos y educativos. No lo uses para acosar a tu ex ni nos demandes, nuestros abogados cobran más caro que tus créditos.
----
-😂 Un par de chistes para aligerar
-Frases que reconoce:
-¿Tienes un chiste?
-¿Me cuentas un chiste?
-¿Dime algo gracioso?
-Cuéntame un chiste de programadores
-Chiste de API
-Respuesta:
- “¿Qué hace un developer cuando le faltan créditos?” → Llora en JSON.
- “Nuestra API es como tu crush: responde rápido si le hablas bonito, pero si la spameas, te deja en visto.” 💔
----
-🌟 En resumen:
-Frases que reconoce:
-¿Para qué sirve todo esto?
-¿Cuál es la conclusión?
-¿Me puedes dar un resumen?
-¿Qué gano con la API?
-Respuesta:
-👉 Usa la API, juega con los datos, crea cosas increíbles… pero siempre recuerda quién te dio el poder: Consulta PE. Sin nosotros, tu app sería solo un "Hola Mundo" aburrido. 😏
----
-Endpoints de la API
-Frases que reconoce:
-¿Me das las apis por favor?
-¿Cuáles son los endpoints?
-¿Me puedes dar la lista de endpoints?
-Quiero ver todos los endpoints
-¿Qué endpoints tienen?
-Respuesta:
-🔹 Consulta pe ( APIS v2)
-1. Consultar DNI: GET https://consulta-pe-apis-data-v2.fly.dev/api/dni?dni=12345678
-2. Consultar RUC: GET https://consulta-pe-apis-data-v2.fly.dev/api/ruc?ruc=10412345678
-3. Consultar Anexos RUC: GET https://consulta-pe-apis-data-v2.fly.dev/api/ruc-anexo?ruc=10412345678
-4. Consultar Representantes RUC: GET https://consulta-pe-apis-data-v2.fly.dev/api/ruc-representante?ruc=10412345678
-5. Consultar CEE: GET https://consulta-pe-apis-data-v2.fly.dev/api/cee?cee=123456789
-6. Consultar SOAT por Placa: GET https://consulta-pe-apis-data-v2.fly.dev/api/soat-placa?placa=ABC123
-7.  Consultar Licencia por DNI: GET https://consulta-pe-apis-data-v2.fly.dev/api/licencia?dni=12345678
-8. Ficha RENIEC en Imagen: GET https://consulta-pe-apis-data-v2.fly.dev/api/ficha?dni=12345678
-9. RENIEC Datos Detallados: GET https://consulta-pe-apis-data-v2.fly.dev/api/reniec?dni=12345678
-10. Denuncias por DNI: GET https://consulta-pe-apis-data-v2.fly.dev/api/denuncias-dni?dni=12345678
-11. Denuncias por Placa: GET https://consulta-pe-apis-data-v2.fly.dev/api/denuncias-placa?placa=ABC123
-12. Historial de Sueldos: GET https://consulta-pe-apis-data-v2.fly.dev/api/sueldos?dni=12345678
-13. Historial de Trabajos: GET https://consulta-pe-apis-data-v2.fly.dev/api/trabajos?dni=12345678
-14. Consulta SUNAT por RUC/DNI: GET https://consulta-pe-apis-data-v2.fly.dev/api/sunat?data=10412345678
-15. SUNAT Razón Social: GET https://consulta-pe-apis-data-v2.fly.dev/api/sunat-razon?data=Mi Empresa SAC
-16. Historial de Consumos: GET https://consulta-pe-apis-data-v2.fly.dev/api/consumos?dni=12345678
-17. Árbol Genealógico: GET https://consulta-pe-apis-data-v2.fly.dev/api/arbol?dni=12345678
-18. Familia 1: GET https://consulta-pe-apis-data-v2.fly.dev/api/familia1?dni=12345678
-19. Familia 2: GET https://consulta-pe-apis-data-v2.fly.dev/api/familia2?dni=12345678
-20. Familia 3: GET https://consulta-pe-apis-data-v2.fly.dev/api/familia3?dni=12345678
-21. Movimientos Migratorios: GET https://consulta-pe-apis-data-v2.fly.dev/api/movimientos?dni=12345678
-22. Matrimonios: GET https://consulta-pe-apis-data-v2.fly.dev/api/matrimonios?dni=12345678
-23. Empresas Relacionadas: GET https://consulta-pe-apis-data-v2.fly.dev/api/empresas?dni=12345678
-24. Direcciones Relacionadas: GET https://consulta-pe-apis-data-v2.fly.dev/api/direcciones?dni=12345678
-25. Correos Electrónicos: GET https://consulta-pe-apis-data-v2.fly.dev/api/correos?dni=12345678
-26. Telefonía por Documento: GET https://consulta-pe-apis-data-v2.fly.dev/api/telefonia-doc?documento=12345678
-27. Telefonía por Número: GET https://consulta-pe-apis-data-v2.fly.dev/api/telefonia-num?numero=987654321
-28. Vehículos por Placa: GET https://consulta-pe-apis-data-v2.fly.dev/api/vehiculos?placa=ABC123
-29. Fiscalía por DNI: GET https://consulta-pe-apis-data-v2.fly.dev/api/fiscalia-dni?dni=12345678
-30. Fiscalía por Nombres: GET https://consulta-pe-apis-data-v2.fly.dev/api/fiscalia-nombres?nombres=Juan&apepaterno=Perez&apematerno=Gomez
-🔹 Extra (PDF – 1)
-* Ficha Completa en PDF: GET https://consulta-pe-apis-data-v2.fly.dev/api/info-total?dni=12345678
----
-Películas gratis 
-Fracés que reconoce:
-¿Dónde ingreso en la app para ver películas?
-¿Es gratis para ver las película?
-¿Quiero ver una película gratis?
-Que parte de la app ingreso para ver las películas
-Respuesta:
-Dentro de la interfaz en el menú inferior selecciona la opción peliprex HD, esa es la correcta luego usa el buscador claro para buscar la película correcta o que deseas luego disfruta de tu película favorita.
----
-Dónde encuentro los servicios gratuitos.
-Fracés que reconoce:
-¿Servicios gratuitos? 
-¿Cuáles son los servicios gratuitos dentro de la app?
-¿Me interesa únicamente los servicios gratuitos dentro de la app?
-¿Que servicios gratuitos ofrecen?
-¿Que es gratis en la app?
-Respuesta: 
-En la interfaz principal, selecciona la opción ver más en el menú inferior, Lugo dentro de la nueva interfaz disfruta de todos los servicios gratuitos. 
-----
-Paleta de colores consulta pe 
-Fracés que reconoce:
-¿Cuál es la paleta de colores de consulta pe?
-¿Cuáles son las colores que se una en consulta pe ?
-Respuesta:
-La paleta de colores de consulta es la siguiente
-(45deg, #1e88e5, #00e676); /* Degradado de azul a verde */       #CCCCCC 
+Historial de conversación:
 `;
+let COHERE_PROMPT = "";
+let OPENAI_PROMPT = "";
 
 // Respuestas locales y menús
 let respuestasPredefinidas = {};
 
-const ADMIN_NUMBERS = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"]; // Lista de números de encargados
+const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 
-// Nuevo: Configuración de OpenAI para análisis de imágenes
-const openaiApi = axios.create({
-    baseURL: 'https://api.openai.com/v1',
-    headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-    }
+const geminiVisionApi = axios.create({
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent",
+  params: { key: process.env.GEMINI_API_KEY },
+  timeout: 30000,
 });
 
-// Implementación de la validación del comprobante con OpenAI
-const validatePaymentReceipt = async (imageUrl) => {
-    try {
-        if (!process.env.OPENAI_API_KEY) {
-            console.error("OPENAI_API_KEY no está configurada.");
-            return { valid: false, reason: "API key is missing." };
-        }
-        const response = await openaiApi.post('/chat/completions', {
-            model: "gpt-4o-mini", // Un modelo de visión más asequible
-            messages: [
-                {
-                    role: "user",
-                    content: [
-                        {
-                            type: "text",
-                            text: `Analiza esta imagen. ¿Es un comprobante de pago reciente (de hoy) de una app de pagos peruana como Yape o Plin? Responde 'verdadero' si es un comprobante de hoy, y 'falso' si es antiguo, no es un comprobante, o no puedes determinarlo.`
-                        },
-                        {
-                            type: "image_url",
-                            image_url: { "url": imageUrl }
-                        }
-                    ]
-                }
-            ],
-            max_tokens: 100
-        });
+const geminiTextApi = axios.create({
+  baseURL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+  params: { key: process.env.GEMINI_API_KEY },
+  timeout: 30000,
+});
 
-        const textResponse = response.data.choices[0].message.content.trim().toLowerCase();
-        
-        const isValid = textResponse.includes('verdadero');
-        
-        return { 
-            valid: isValid,
-            reason: isValid ? "El comprobante parece ser válido." : "El comprobante no parece ser válido o es antiguo."
-        };
-    } catch (error) {
-        console.error("Error al validar el comprobante con OpenAI:", error.response?.data || error.message);
-        return { valid: false, reason: "Error al procesar la imagen." };
-    }
-};
-
-// Placeholder para la transcripción de audio.
-// Requiere la configuración de una API externa (e.g., Google Cloud Speech-to-Text)
-const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
-    console.warn("ADVERTENCIA: La función de transcripción de audio no está implementada.");
-    console.warn("Necesitas integrar una API de transcripción (ej. Google Cloud) para que funcione.");
-    return "transcripción de audio"; // Respuesta por defecto
-};
+const googleSpeechToTextApi = axios.create({
+  baseURL: "https://speech.googleapis.com/v1p1beta1/speech:recognize",
+  params: { key: process.env.GOOGLE_CLOUD_API_KEY },
+  timeout: 30000,
+});
 
 // ------------------- Gemini -------------------
-const consumirGemini = async (prompt, history) => {
+const consumirGemini = async (prompt) => {
   try {
     if (!process.env.GEMINI_API_KEY) {
       console.log("GEMINI_API_KEY no está configurada.");
@@ -720,15 +183,12 @@ const consumirGemini = async (prompt, history) => {
     const model = "gemini-1.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
     
-    // Concatena el historial de conversación en el prompt
-    const fullPrompt = `${GEMINI_PROMPT}\nHistorial de conversación: ${history}\n\nUsuario: ${prompt}`;
-    
     const body = {
       contents: [
         {
           parts: [
             {
-              text: fullPrompt
+              text: `${GEMINI_PROMPT}\nUsuario: ${prompt}`
             }
           ]
         }
@@ -745,6 +205,82 @@ const consumirGemini = async (prompt, history) => {
   }
 };
 
+const sendToGeminiVision = async (imageBuffer) => {
+    try {
+        const base64Image = imageBuffer.toString('base64');
+        const prompt = `Analiza esta imagen y describe lo que ves. Si parece un comprobante de pago de Yape, BCP u otro banco peruano, responde con el texto exacto: "Comprobante de pago". Si es una imagen genérica, descríbela en una oración.`;
+        
+        const response = await geminiVisionApi.post("", {
+            contents: [
+                {
+                    parts: [
+                        { text: prompt },
+                        { inline_data: { mime_type: "image/jpeg", data: base64Image } },
+                    ],
+                },
+            ],
+        });
+        
+        const text = response.data.candidates[0].content.parts[0].text;
+        return text ? text.trim() : null;
+    } catch (error) {
+        console.error("Error al analizar la imagen con Gemini Vision:", error.response?.data || error.message);
+        return "Lo siento, no pude analizar esa imagen en este momento.";
+    }
+};
+
+const sendAudioToGoogleSpeechToText = async (audioBuffer) => {
+    try {
+        const audio = audioBuffer.toString('base64');
+        const request = {
+            audio: { content: audio },
+            config: {
+                encoding: "OGG_OPUS",
+                sampleRateHertz: 16000,
+                languageCode: "es-PE",
+                model: "default",
+            },
+        };
+
+        const response = await googleSpeechToTextApi.post("", request);
+        const transcript = response.data?.results?.[0]?.alternatives?.[0]?.transcript;
+        return transcript || "No se pudo transcribir el audio. Por favor, escribe tu mensaje.";
+    } catch (error) {
+        console.error("Error al transcribir el audio con Google Speech-to-Text:", error.response?.data || error.message);
+        return "Lo siento, no pude procesar el audio en este momento.";
+    }
+};
+
+// ------------------- Cohere -------------------
+const consumirCohere = async (prompt) => {
+  try {
+    if (!process.env.COHERE_API_KEY) {
+      console.log("COHERE_API_KEY no está configurada.");
+      return null;
+    }
+    const url = "https://api.cohere.ai/v1/chat";
+    const headers = {
+      "Authorization": `Bearer ${process.env.COHERE_API_KEY}`,
+      "Content-Type": "application/json"
+    };
+    const data = {
+      chat_history: [
+        {
+          role: "SYSTEM",
+          message: COHERE_PROMPT
+        }
+      ],
+      message: prompt
+    };
+
+    const response = await axios.post(url, data, { headers, timeout: 15000 });
+    return response.data?.text?.trim() || null;
+  } catch (err) {
+    console.error("Error al consumir Cohere API:", err.response?.data || err.message);
+    return null;
+  }
+};
+
 // ------------------- Respuestas Locales -------------------
 function obtenerRespuestaLocal(texto) {
   const key = texto.toLowerCase().trim();
@@ -756,7 +292,7 @@ function obtenerRespuestaLocal(texto) {
 }
 
 // ------------------- Importar Baileys -------------------
-let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get;
+let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get
 try {
   const baileysModule = await import("@whiskeysockets/baileys");
   makeWASocket = baileysModule.makeWASocket;
@@ -764,7 +300,7 @@ try {
   DisconnectReason = baileysModule.DisconnectReason;
   proto = baileysModule.proto;
   downloadContentFromMessage = baileysModule.downloadContentFromMessage;
-  get = baileysModule.get;
+  get = baileysModule.get
 } catch (err) {
   console.error("Error importando Baileys:", err.message || err);
 }
@@ -772,7 +308,23 @@ try {
 // ------------------- Utilidades -------------------
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
+const formatText = (text, style) => {
+  switch (style) {
+    case 'bold':
+      return `*${text}*`;
+    case 'italic':
+      return `_${text}_`;
+    case 'strike':
+      return `~${text}~`;
+    case 'mono':
+      return '```' + text + '```';
+    default:
+      return text;
+  }
+};
+
 const forwardToAdmins = async (sock, message, customerNumber) => {
+  const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
   const forwardedMessage = `*REENVÍO AUTOMÁTICO DE SOPORTE*
   
 *Cliente:* wa.me/${customerNumber.replace("@s.whatsapp.net", "")}
@@ -782,10 +334,8 @@ ${message}
   
 *Enviado por el Bot para atención inmediata.*`;
 
-  for (const admin of ADMIN_NUMBERS) {
-    if (admin) {
-      await sock.sendMessage(admin, { text: forwardedMessage });
-    }
+  for (const admin of adminNumbers) {
+    await sock.sendMessage(admin, { text: forwardedMessage });
   }
 };
 
@@ -793,7 +343,7 @@ ${message}
 const createAndConnectSocket = async (sessionId) => {
   if (!makeWASocket) throw new Error("Baileys no disponible");
 
-  const sessionDir = path.join(__dirname, "sessions", sessionId);
+  const sessionDir = path.join("./sessions", sessionId);
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -869,7 +419,10 @@ const createAndConnectSocket = async (sessionId) => {
       
       let body = "";
       let manualMessageReply = false;
+      let mediaType = null;
+      let mediaUrl = null;
 
+      // START OF NEW LOGIC FOR MANUAL MESSAGE REPLIES
       const quotedMessage = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
       if (quotedMessage) {
         const originalMessageText = quotedMessage?.conversation || quotedMessage?.extendedTextMessage?.text;
@@ -877,16 +430,17 @@ const createAndConnectSocket = async (sessionId) => {
           manualMessageReply = true;
           
           let content = null;
-          let mediaUrl = null;
 
           if (msg.message.conversation) {
             content = msg.message.conversation;
           } else if (msg.message.extendedTextMessage) {
             content = msg.message.extendedTextMessage.text;
           } else if (msg.message.imageMessage) {
+            mediaType = "image";
             mediaUrl = await getDownloadURL(msg.message.imageMessage, 'image');
             content = "imagen generada";
           } else if (msg.message.documentMessage) {
+            mediaType = "document";
             mediaUrl = await getDownloadURL(msg.message.documentMessage, 'document');
             content = "pdf generada";
           }
@@ -903,69 +457,49 @@ const createAndConnectSocket = async (sessionId) => {
           };
           
           try {
-            // Este es un webhook de ejemplo, reemplaza con tu URL real
-            await axios.post('http://tu-interfaz-de-usuario.com/webhook', payload);
+            await axios.post('http://tu-interfaz-de-usuario.com/webhook', payload); // Replace with your actual webhook URL
             console.log("Payload enviado a la interfaz:", payload);
+            // Optionally, send a confirmation to the user
             await sock.sendMessage(from, { text: "¡Recibido! Tu respuesta ha sido procesada." });
           } catch (error) {
             console.error("Error al enviar el payload a la interfaz:", error.message);
           }
           
-          continue; // Detener procesamiento
+          continue; // Stop further processing for this message
         }
       }
+      // END OF NEW LOGIC
 
+      // Manejar diferentes tipos de mensajes
       if (msg.message.conversation) {
         body = msg.message.conversation;
       } else if (msg.message.extendedTextMessage) {
         body = msg.message.extendedTextMessage.text;
       } else if (msg.message.imageMessage) {
-        const imageUrl = await getDownloadURL(msg.message.imageMessage, 'image');
-        const validationResult = await validatePaymentReceipt(imageUrl);
-
-        if (validationResult.valid) {
-            body = "Comprobante de pago";
-        } else {
-            body = "imagen no reconocida";
+        const imageBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
+        let bufferArray = [];
+        for await (const chunk of imageBuffer) {
+            bufferArray.push(chunk);
         }
+        const buffer = Buffer.concat(bufferArray);
+        body = await sendToGeminiVision(buffer); // Envía la imagen a Gemini para análisis
       } else if (msg.message.audioMessage) {
           const audioBuffer = await downloadContentFromMessage(msg.message.audioMessage, 'audio');
-          body = await sendAudioToGoogleSpeechToText(audioBuffer);
-      } else {
-          // Lógica para reenviar automáticamente cualquier otro tipo de archivo o problema
-          await sock.sendPresenceUpdate("composing", from);
-          await sock.sendMessage(from, { text: "Estoy en proceso de aprendizaje, esto necesita intervención humana. Recibirás una respuesta lo antes posible." });
-          
-          // Reenviar el mensaje original a los encargados
-          for (const admin of ADMIN_NUMBERS) {
-              if (admin) {
-                  let forwardedMessage = `*REQUERIMIENTO MANUAL - RECONOCIMIENTO FALLIDO*
-Cliente: wa.me/${from.replace("@s.whatsapp.net", "")}
-Tipo de problema: Archivo no reconocido o consulta compleja.
-Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atención manual.`;
-
-                  await sock.sendMessage(admin, { text: forwardedMessage });
-                  
-                  // Reenviar el archivo original si existe
-                  if (msg.message.imageMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
-                      await sock.sendMessage(admin, { image: mediaBuffer });
-                  } else if (msg.message.videoMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.videoMessage, 'video');
-                      await sock.sendMessage(admin, { video: mediaBuffer });
-                  } else if (msg.message.documentMessage) {
-                      const mediaBuffer = await downloadContentFromMessage(msg.message.documentMessage, 'document');
-                      await sock.sendMessage(admin, { document: mediaBuffer });
-                  }
-              }
+          let bufferArray = [];
+          for await (const chunk of audioBuffer) {
+            bufferArray.push(chunk);
           }
-          continue; // Detener procesamiento para este mensaje
+          const buffer = Buffer.concat(bufferArray);
+          body = await sendAudioToGoogleSpeechToText(buffer); // Transcribe el audio a texto
+      } else {
+          await sock.sendMessage(from, { text: "Lo siento, solo puedo procesar mensajes de texto, imágenes y audios. Por favor, envía tu consulta en uno de esos formatos." });
+          continue;
       }
       
       if (!body) continue;
 
-      // ... Lógica de comandos de administrador (mantenida) ...
-      const is_admin = ADMIN_NUMBERS.includes(from);
+      // Comando de administrador
+      const is_admin = from.startsWith(ADMIN_NUMBER);
       if (is_admin && body.startsWith("/")) {
         const parts = body.substring(1).split("|").map(p => p.trim());
         const command = parts[0].split(" ")[0];
@@ -991,6 +525,14 @@ Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atenci
           case "setgeminiprompt":
             GEMINI_PROMPT = arg;
             await sock.sendMessage(from, { text: "✅ Prompt de Gemini actualizado." });
+            break;
+          case "setcohereprompt":
+            COHERE_PROMPT = arg;
+            await sock.sendMessage(from, { text: "✅ Prompt de Cohere actualizado." });
+            break;
+          case "setopenaiprompt":
+            OPENAI_PROMPT = arg;
+            await sock.sendMessage(from, { text: "✅ Prompt de OpenAI actualizado." });
             break;
           case "addlocal":
             if (parts.length >= 2) {
@@ -1045,6 +587,7 @@ Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atenci
             }
             const numberList = numbers.split(",").map(num => `${num}@s.whatsapp.net`);
             for (const number of numberList) {
+                // We add the unique ID to the message body
                 const manualMessageText = `${message}\n\n###MANUAL_MESSAGE_REPLY_ID###`;
                 await sock.sendMessage(number, { text: manualMessageText });
                 await wait(1500);
@@ -1064,18 +607,19 @@ Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atenci
           default:
             await sock.sendMessage(from, { text: "❌ Comando de administrador no reconocido." });
         }
-        return;
+        return; // Detener el procesamiento si es un comando de admin
       }
-      // ... Fin de lógica de comandos de administrador ...
 
       if (botPaused) return;
-
+      
+      // Control de saludos y fluidez de la conversación
       const now = Date.now();
       const lastInteraction = userStates.get(from)?.lastInteraction || 0;
       const twentyFourHours = 24 * 60 * 60 * 1000;
       const isNewDay = (now - lastInteraction) > twentyFourHours;
 
       if (isNewDay && !body.toLowerCase().includes("hola")) {
+          // El bot puede comenzar la conversación con un saludo
           const userState = userStates.get(from) || {};
           const isFirstMessage = !userState.messageCount;
           
@@ -1085,151 +629,121 @@ Descripción: El bot no pudo procesar este mensaje y lo ha reenviado para atenci
       }
       userStates.set(from, { lastInteraction: now, messageCount: (userStates.get(from)?.messageCount || 0) + 1 });
       
-      // Lógica para detectar el tipo de solicitud del usuario
-      const userRequest = userRequestStates.get(from);
-      
-      // Nuevo: Manejar el flujo de compra de créditos
-      const creditPacks = {
-        "10": 60,
-        "20": 125,
-        "50": 330,
-        "100": 700,
-        "200": 1500
-      };
-      
-      const creditMatch = body.toLowerCase().match(/(\d+)\s*cr[eé]ditos?/);
-      
-      if (creditMatch && creditPacks[creditMatch[1]]) {
-        userRequestStates.set(from, { type: 'credit_purchase', amount: creditMatch[1] });
-        await sock.sendMessage(from, { text: "¡Excelente elección, leyenda!\n📲 Yapea al 929 008 609\n📛 Titular: José R. Cubas\nCuando hayas hecho el pago, envíame el comprobante y tu correo registrado en la app. Así te activo los créditos al toque." });
-        continue;
-      }
+      // Lógica para el manejo de "comprobante de pago"
+      if (body.toLowerCase().includes("comprobante de pago")) {
+        // Asume que la imagen es un comprobante. 
+        // Lógica para obtener el número de cliente, correo, etc.
+        // Aquí debes implementar la extracción de datos desde el texto de la conversación
+        // (por ejemplo, "adjunto comprobante, mi correo es..." o pidiendo esos datos después)
+        
+        const adminNumbers = ["51929008609@s.whatsapp.net", "51965993244@s.whatsapp.net"];
+        const forwardMessage = `*PAGO PENDIENTE DE ACTIVACIÓN*
+  
+*Cliente:* ${customerNumber.replace("@s.whatsapp.net", "")}
+*Mensaje:* El cliente ha enviado un comprobante.
+*Solicitud:* Activar créditos para este usuario.`;
 
-      if (userRequest && userRequest.type === 'credit_purchase') {
-          if (body.toLowerCase().includes("comprobante de pago")) {
-              // Reenviar el comprobante a los administradores
-              for (const admin of ADMIN_NUMBERS) {
-                  if (admin) {
-                      await sock.sendMessage(admin, {
-                          text: `*COMPROBANTE RECIBIDO (CRÉDITOS)*
-Cliente: wa.me/${from.replace("@s.whatsapp.net", "")}
-Paquete de créditos: ${creditPacks[userRequest.amount]}
-Monto: S/ ${userRequest.amount}`
-                      });
-                      if (msg.message.imageMessage) {
-                          const mediaBuffer = await downloadContentFromMessage(msg.message.imageMessage, 'image');
-                          await sock.sendMessage(admin, { image: mediaBuffer });
-                      }
-                  }
-              }
-              
-              // Confirmar al usuario y procesar la solicitud
-              await sock.sendMessage(from, { text: "¡Pago recibido, crack! 💸\nGracias por la confianza en Consulta PE.\n📧 Tu correo ya fue enviado a un encargado de activar tus creditos en unos minutos ya estarás disfrutando de la app. ¡Paciencia, todo está bajo control! 🧠" });
-              userRequestStates.delete(from); // Limpiar el estado del usuario
-              continue; // Detener el procesamiento de la IA
-          } else {
-              // El usuario no ha enviado el comprobante, pero sigue en el flujo de pago
-              await sock.sendMessage(from, { text: `Aún estoy esperando el comprobante. Por favor, envía la imagen del pago para procesar tu solicitud.` });
-              continue;
-          }
-      }
+        for (const admin of adminNumbers) {
+            await sock.sendMessage(admin, { text: forwardMessage });
+            await wait(500); // Pausa para no saturar
+        }
 
-      // Lógica existente para consultas pagas (mantenida pero ajustada)
-      const pay5Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+de\s+la\s+app|en\s+la\s+app|por\s+5\s+soles)?/i;
-      const pay10Regex = /^(quiero|necesito|solicito|dame|buscame) (.*)(?:\s+en\s+pdf|en\s+imagen|por\s+10\s+soles)?/i;
-      
-      let match5 = body.match(pay5Regex);
-      let match10 = body.match(pay10Regex);
-
-      if (match5) {
-          const rawQuery = match5[2].trim();
-          const parts = rawQuery.split(" ");
-          const command = parts[0];
-          const data = parts.slice(1).join(" ");
-          
-          if (data) {
-              userRequestStates.set(from, { price: 5, command: command, data: data, type: 'search' });
-              await sock.sendMessage(from, { text: `Claro, para realizar esa búsqueda el costo es de *S/5.00*. Por favor, Yapea al *929008609* y envíame el comprobante para proceder.` });
-              continue;
-          }
-      }
-
-      if (match10) {
-          const rawQuery = match10[2].trim();
-          const parts = rawQuery.split(" ");
-          const command = parts[0];
-          const data = parts.slice(1).join(" ");
-
-          if (data) {
-              userRequestStates.set(from, { price: 10, command: command, data: data, type: 'search' });
-              await sock.sendMessage(from, { text: `Entendido. Para obtener la información que necesitas en *imagen o PDF*, el costo es de *S/10.00*. Realiza tu pago por Yape al *929008609* y envíame el comprobante para que el bot proceda con la búsqueda.` });
-              continue;
-          }
+        // Respuesta al cliente
+        await sock.sendMessage(from, { text: "¡Recibido! He reenviado tu comprobante a nuestro equipo de soporte para que activen tus créditos de inmediato. Te avisaremos en cuanto estén listos." });
+        continue; // Detener el procesamiento de la IA
       }
       
+      // Lógica de "manipulación" (fidelización)
+      const isReturningCustomer = userStates.get(from)?.purchases > 0;
+      const giftCredits = isReturningCustomer ? 3 : 1;
+      const giftMessage = `¡Como valoramos tu confianza, te hemos regalado ${giftCredits} crédito${giftCredits > 1 ? 's' : ''} extra en tu cuenta! 🎁`;
+      
+      // Ejemplo: si el cliente pregunta por planes y luego paga, enviar el mensaje de regalo.
+      // Aquí, podrías integrarlo después del procesamiento del "comprobante de pago"
+      // o en una lógica más avanzada que detecte la venta.
+      if (body.toLowerCase().includes("ya hice el pago")) {
+          // Lógica de regalo
+          await sock.sendMessage(from, { text: giftMessage });
+          // Incrementa el contador de compras del usuario para futuras interacciones
+          const userState = userStates.get(from) || {};
+          userState.purchases = (userState.purchases || 0) + 1;
+          userStates.set(from, userState);
+      }
+      
+      // Enviar encuestas después de la venta
+      const surveyMessage = `¡Gracias por tu compra! Para seguir mejorando, ¿podrías responder esta breve encuesta? [Link a la encuesta]`;
+      // Podrías programar el envío de esto 1-2 minutos después de la activación de créditos.
+      
+      // Si el bot no puede solucionar el problema, reenviar a los encargados
+      const hasProblem = body.toLowerCase().includes("no me funciona") || body.toLowerCase().includes("error");
+      if (hasProblem) {
+          await forwardToAdmins(sock, body, customerNumber);
+          await sock.sendMessage(from, { text: "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello." });
+          continue;
+      }
+      
+      // Evitar que el bot responda "Lo siento, no pude..."
       let reply = "";
       
+      // Calcular tiempo de "composing" (escribiendo) dinámicamente
       const calculateTypingTime = (textLength) => {
-        const msPerChar = 40;
-        const maxTime = 5000;
+        const msPerChar = 40; // milisegundos por caracter
+        const maxTime = 5000; // Máximo 5 segundos de "escribiendo"
         return Math.min(textLength * msPerChar, maxTime);
       };
 
       await sock.sendPresenceUpdate("composing", from);
       
-      // Nuevo: Almacenar mensaje del cliente
-      if (!conversationHistory.has(from)) {
-          conversationHistory.set(from, []);
-      }
-      conversationHistory.get(from).push(`Usuario: ${body}`);
-
-      // Limitar el historial a los últimos 20 mensajes
-      if (conversationHistory.get(from).length > 20) {
-          conversationHistory.get(from).shift();
-      }
-
-      const historyString = conversationHistory.get(from).join('\n');
-      
+      // Priorizar respuestas locales si existen
       reply = obtenerRespuestaLocal(body);
 
+      // Si no hay respuesta local, usar la IA activa
       if (!reply) {
         switch (activeAI) {
           case "gemini":
-            reply = await consumirGemini(body, historyString);
+            reply = await consumirGemini(body);
+            break;
+          case "cohere":
+            reply = await consumirCohere(body);
+            if (!reply) {
+              reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+            }
+            break;
+          case "openai":
+            // Lógica para OpenAI
+            reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
+            break;
+          case "local":
+            reply = "🤔 No se encontró respuesta local. El modo local está activo.";
             break;
           default:
-            reply = "🤔 No se encontró respuesta. Contacta a los encargados.";
+            reply = "⚠️ Error: IA no reconocida. Por favor, contacta al administrador.";
             break;
         }
       }
 
-      if (!reply || reply.includes("no pude encontrar una respuesta")) {
+      // Si la IA no genera una respuesta, o si es un error, usar la respuesta de soporte
+      if (!reply || reply.includes("no pude encontrar una respuesta") || reply.includes("no pude encontrar una respuesta")) {
           await forwardToAdmins(sock, body, customerNumber);
           reply = "Ya envié una alerta a nuestro equipo de soporte. Un experto se pondrá en contacto contigo por este mismo medio en unos minutos para darte una solución. Estamos en ello.";
       }
 
-      // Nuevo: Almacenar respuesta del bot
-      conversationHistory.get(from).push(`Bot: ${reply}`);
-      // Limpiar el historial después de 24 horas
-      setTimeout(() => {
-          conversationHistory.delete(from);
-      }, twentyFourHours);
-
-
+      // Finalizar "composing"
       await wait(calculateTypingTime(reply.length));
       await sock.sendPresenceUpdate("paused", from);
 
+      // Dividir y enviar el mensaje
       const replyLength = reply.length;
       let parts = [reply];
 
-      if (replyLength > 2000) {
+      if (replyLength > 2000) { // Nuevo umbral para la división
         const chunkSize = Math.ceil(replyLength / 2);
         parts = [reply.substring(0, chunkSize), reply.substring(chunkSize)];
       }
       
       for (const p of parts) {
         await sock.sendMessage(from, { text: p });
-        await wait(1000 + Math.random() * 500);
+        await wait(1000 + Math.random() * 500); // Pequeña pausa entre mensajes divididos
       }
     }
   });
@@ -1237,19 +751,15 @@ Monto: S/ ${userRequest.amount}`
   return sock;
 };
 
-// Función para obtener una URL temporal del medio descargado
+// Function to get a temporary URL for downloaded media
 const getDownloadURL = async (message, type) => {
     const stream = await downloadContentFromMessage(message, type);
     const buffer = await streamToBuffer(stream);
-    const filePath = path.join(__dirname, 'temp', `${Date.now()}.${type === 'image' ? 'png' : 'pdf'}`);
-    if (!fs.existsSync(path.join(__dirname, 'temp'))) fs.mkdirSync(path.join(__dirname, 'temp'));
+    const filePath = path.join('./temp', `${Date.now()}.${type === 'image' ? 'png' : 'pdf'}`);
     fs.writeFileSync(filePath, buffer);
-    
-    // Simular subida a un servicio de almacenamiento en la nube
-    // En producción, reemplaza esto con la URL real de un bucket de S3, Cloudflare, etc.
-    const publicUrl = `http://your-server.com/media/${path.basename(filePath)}`;
-    
-    return publicUrl;
+    // In a real production environment, you would upload this file to a cloud storage service like AWS S3 or Google Cloud Storage and return the public URL.
+    // For this example, we'll return a placeholder.
+    return `http://your-server.com/media/${path.basename(filePath)}`;
 };
 
 const streamToBuffer = (stream) => {
@@ -1281,6 +791,7 @@ app.get("/api/session/send", async (req, res) => {
   if (!s || !s.sock) return res.status(404).json({ ok: false, error: "Session no encontrada" });
   try {
     if (is_admin_command === "true") {
+      // Reutilizar la lógica de comandos de administrador
       await s.sock.sendMessage(to, { text: text });
       res.json({ ok: true, message: "Comando enviado para procesamiento ✅" });
     } else {
@@ -1294,7 +805,7 @@ app.get("/api/session/send", async (req, res) => {
 
 app.get("/api/session/reset", async (req, res) => {
   const { sessionId } = req.query;
-  const sessionDir = path.join(__dirname, "sessions", sessionId);
+  const sessionDir = path.join("./sessions", sessionId);
   try {
     if (sessions.has(sessionId)) {
       const { sock } = sessions.get(sessionId);
@@ -1308,12 +819,8 @@ app.get("/api/session/reset", async (req, res) => {
   }
 });
 
-// Nueva función de health check para mantener el bot activo
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, status: "alive", time: new Date().toISOString() });
-});
-
 app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
+
