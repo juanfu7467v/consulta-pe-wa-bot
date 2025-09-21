@@ -660,6 +660,24 @@ Historial de conversación:
 let COHERE_PROMPT = "";
 let OPENAI_PROMPT = "";
 
+// Prompts y datos para el pago
+const YAPE_PROMPT = `¡Listo, leyenda! Elige la cantidad de poder que quieres, escanea el QR y paga directo por Yape.
+
+*Monto:* S/{{monto}}
+*Créditos:* {{creditos}}
+*Yape:* {{numero_yape}}
+*Titular:* José R. Cubas
+
+Una vez que pagues, envía el comprobante y tu correo registrado en la app. Te activamos los créditos al toque. No pierdas tiempo.
+
+`;
+const PACKAGES = {
+    '10': { amount: 10, credits: 60, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+    '20': { amount: 20, credits: 125, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+    '50': { amount: 50, credits: 330, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+    '100': { amount: 100, credits: 700, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+    '200': { amount: 200, credits: 1500, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+};
 // Respuestas locales y menús
 let respuestasPredefinidas = {};
 
@@ -1162,6 +1180,42 @@ const createAndConnectSocket = async (sessionId) => {
         await sock.sendMessage(from, { text: "¡Recibido! He reenviado tu comprobante a nuestro equipo de soporte para que activen tus créditos de inmediato. Te avisaremos en cuanto estén listos." });
         continue; // Detener el procesamiento de la IA
       }
+
+      // Lógica para detectar la elección del paquete
+      let paqueteElegido = null;
+      const lowerCaseBody = body.toLowerCase().trim();
+
+      for (const [key, value] of Object.entries(PACKAGES)) {
+        if (lowerCaseBody.includes(key) || lowerCaseBody.includes(`paquete de ${key}`)) {
+          paqueteElegido = value;
+          break;
+        }
+      }
+
+      if (paqueteElegido) {
+        try {
+          // Cargar la imagen del QR
+          const qrImageBuffer = await axios.get(process.env[paqueteElegido.qr_key], { responseType: 'arraybuffer' });
+          const qrImage = Buffer.from(qrImageBuffer.data, 'binary');
+
+          // Generar el mensaje de texto
+          const textMessage = YAPE_PROMPT
+            .replace('{{monto}}', paqueteElegido.amount)
+            .replace('{{creditos}}', paqueteElegido.credits)
+            .replace('{{numero_yape}}', process.env[paqueteElegido.yape_num]);
+            
+          // Enviar la imagen y el texto en un solo mensaje
+          await sock.sendMessage(from, {
+            image: qrImage,
+            caption: textMessage
+          });
+          continue; // Detener el procesamiento de la IA
+        } catch (error) {
+          console.error("Error al enviar el mensaje con QR:", error.message);
+          await sock.sendMessage(from, { text: "Lo siento, hubo un problema al generar los datos de pago. Por favor, inténtalo de nuevo o contacta a soporte." });
+          continue;
+        }
+      }
       
       // Lógica de "manipulación" (fidelización)
       const isReturningCustomer = userStates.get(from)?.purchases > 0;
@@ -1333,4 +1387,3 @@ app.get("/", (req, res) => res.json({ ok: true, msg: "ConsultaPE WA Bot activo �
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server en puerto ${PORT}`));
-
