@@ -1,4 +1,3 @@
-// server.mjs
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -91,10 +90,10 @@ Ejemplo:
 
 El bot puede usar como referencia estas páginas oficiales para dar información, descargas y confianza:
 
-🔗 Página oficial
-🔗 Uptodown
-🔗 Mediafire
-🔗 APK Pure
+🔗 Página oficial: https://www.socialcreator.com/consultapeapk
+🔗 Uptodown: https://com-masitaorex.uptodown.com/android
+🔗 Mediafire: https://www.mediafire.com/file/hv0t7opc8x6kejf/app2706889-uk81cm%25281%2529.apk/file
+🔗 APK Pure: https://apkpure.com/p/com.consulta.pe
 
 (Puedes mencionarlas si el cliente pregunta por dónde descargar la app o quiere alternativas seguras).
 
@@ -138,35 +137,13 @@ Dame acceso completo
 Respuesta: Hola, crack. Bienvenido al lado premium de Consulta PE. Aquí eliges el paquete según cuánto poder quieras desbloquear ahora mismo:
 
 MONTO (S/)  -  CRÉDITOS
-10  ->  60  ⚡
-20  ->  125  🌟
-50  ->  330  💎
-100 -> 700  👑
-200 -> 1500  🚀
+10                             60  ⚡
+20                            125  🌟
+50                            330  💎
+100                          700  👑
+200                           1500  🚀
 
 Importante: Los créditos no caducan. Lo que compras, es tuyo. No lo dudes, quien actúa primero gana.
-
-
----
-
-💸 Datos de Pago (Yape)
-
-Frases que reconoce:
-
-¿Cuál es el número de Yape?
-Pásame el Yape
-¿Dónde te pago?
-Número para pagar
-¿A dónde envío el dinero?
-¿Cómo se llama el que recibe?
-
-Respuesta: Buena elección, leyenda.
-Yapea al 929 008 609
-Titular: José R. Cubas
-
-Cuando hagas el pago, envía el comprobante y tu correo dentro de la app. Te activo los créditos al toque. No pierdas tiempo; la información se compra y se aprovecha.
-
-
 ---
 
 ⏳ Ya pagué y no tengo los créditos
@@ -199,13 +176,13 @@ Frases que reconoce:
 
 Respuesta: Consulta sin límites todo el mes a un precio fijo. Elige el plan que más te convenga y deja de preocuparte por recargas pequeñas.
 
-DURACIÓN - PRECIO SUGERIDO - AHORRO ESTIMADO
-7 días - S/55
-15 días - S/85 - ahorras S/10
-1 mes - S/120 - ahorras S/20
-1 mes y medio - S/165 - ahorras S/30
-2 meses - S/210 - ahorras S/50
-2 meses y medio - S/300 - ahorras S/37
+DURACIÓN -  PRECIO -       AHORRAS
+7 días               S/60                           ⚡ 
+15 días             S/85                 S/10 🌟
+1 mes               S/120               S/20 💎
+1 mes/medi    S/165               S/30 👑
+2 meses           S/210               S/50 🚀
+2 mes/medio   S/300               S/37 🔥 
 
 Decide ahora y domina la data sin límites.
 
@@ -265,9 +242,14 @@ Vehículos: Verifica si una placa tiene requisitoria activa?
 ¿Tienes más servicios?
 ¿Haces más consultas?
 ¿Qué otra cosa se puede hacer?
+Buenas tardes hoja de vida
+Quiero una ficha RENIEC
+Respuesta:
+Buena elección, leyenda.
+📲 Yapea al 929 008 609
+📛 Titular: José R. Cubas
 
-Respuesta: Claro que sí, máquina.
-El servicio para esas consultas cuesta S/5.00. Haz el pago por Yape al 929008609 a nombre de José R. Cubas. Después manda el comprobante y el DNI o los datos a consultar. Nosotros te damos resultados reales. Aquí no jugamos, solo resultados.
+Cuando lo hagas, mándame el comprobante + el dato o DNI a consultar, y te envio los resultados al instante sin perder el tiempo.
 
 
 ---
@@ -652,7 +634,9 @@ Si te dicen algo fuera de contexto:
 
 Siempre que sea posible, sugiere al cliente probar otra categoría de servicio.
 Ejemplo:
-👉 “Ya terminé con tu consulta de DNI ✅. Por cierto, ¿quieres que te muestre también cómo consultar el RUC o el estado de trámite de tu documento? Te puede servir más de lo que imaginas 😉.”
+👉 “Ya terminé con tu consulta de DNI ✅. Por cierto, ¿queres que te muestre también cómo consultar el RUC o el estado de trámite de tu documento? Te puede servir más de lo que imaginas 😉.”
+
+---
 
 ---
 Historial de conversación:
@@ -1336,6 +1320,10 @@ const streamToBuffer = (stream) => {
 };
 
 // ------------------- Endpoints -------------------
+app.get("/api/health", (req, res) => {
+res.json({ ok: true, status: "alive", time: new Date().toISOString() });
+});
+
 app.get("/api/session/create", async (req, res) => {
   const sessionId = req.query.sessionId || `session_${Date.now()}`;
   if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
