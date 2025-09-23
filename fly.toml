@@ -1,5 +1,7 @@
-# fly.toml app configuration file for Consulta PE WhatsApp Bot
-# Mantener online 24/7
+# fly.toml app configuration file generated for consulta-pe-wa-bot on 2025-09-23T15:29:14Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
 app = 'consulta-pe-wa-bot'
 primary_region = 'gru'
@@ -9,9 +11,9 @@ primary_region = 'gru'
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = false   # Evita que Fly.io apague la máquina
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 1     # Siempre habrá al menos 1 máquina corriendo
+  min_machines_running = 0
   processes = ['app']
 
 [[vm]]
