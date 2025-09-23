@@ -655,12 +655,16 @@ const YAPE_PROMPT = `¡Listo, leyenda! Elige la cantidad de poder que quieres, e
 Una vez que pagues, envía el comprobante y tu correo registrado en la app. Te activamos los créditos al toque. No pierdas tiempo.
 
 `;
+// Corrección clave: Asegurar que las variables estén definidas
+const LEMON_QR_IMAGE_URL = process.env.LEMON_QR_IMAGE || "https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjVr57hBat6RGw80ZKF7DZGjmGsFiBQdCeBc1fIGsNF9RBfuhWSYtdWce3GdxJedoyIWCLiGd44B4-zYFFJsD_tLGvAfCAD6p0mZl8et3Ak149N5dlek16wfEQdbsKJdF49WLYFvtNFvV-WPuKvpFnA1JWthDtw57AQ_U422Rcgi8WvrV7iQa0pdRzu0yVe/s1490/1000014418.png";
+const YAPE_NUMBER = process.env.YAPE_NUMBER || "929008609";
+
 const PACKAGES = {
-    '10': { amount: 10, credits: 60, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '20': { amount: 20, credits: 125, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '50': { amount: 50, credits: 330, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '100': { amount: 100, credits: 700, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
-    '200': { amount: 200, credits: 1500, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
+    '10': { amount: 10, credits: 60, qr_url: LEMON_QR_IMAGE_URL, yape_num: YAPE_NUMBER },
+    '20': { amount: 20, credits: 125, qr_url: LEMON_QR_IMAGE_URL, yape_num: YAPE_NUMBER },
+    '50': { amount: 50, credits: 330, qr_url: LEMON_QR_IMAGE_URL, yape_num: YAPE_NUMBER },
+    '100': { amount: 100, credits: 700, qr_url: LEMON_QR_IMAGE_URL, yape_num: YAPE_NUMBER },
+    '200': { amount: 200, credits: 1500, qr_url: LEMON_QR_IMAGE_URL, yape_num: YAPE_NUMBER },
 };
 // Respuestas locales y menús
 let respuestasPredefinidas = {};
@@ -1178,15 +1182,15 @@ const createAndConnectSocket = async (sessionId) => {
 
       if (paqueteElegido) {
         try {
-          // Cargar la imagen del QR
-          const qrImageBuffer = await axios.get(process.env[paqueteElegido.qr_key], { responseType: 'arraybuffer' });
+          // Cargar la imagen del QR desde la URL corregida
+          const qrImageBuffer = await axios.get(paqueteElegido.qr_url, { responseType: 'arraybuffer' });
           const qrImage = Buffer.from(qrImageBuffer.data, 'binary');
 
           // Generar el mensaje de texto
           const textMessage = YAPE_PROMPT
             .replace('{{monto}}', paqueteElegido.amount)
             .replace('{{creditos}}', paqueteElegido.credits)
-            .replace('{{numero_yape}}', process.env[paqueteElegido.yape_num]);
+            .replace('{{numero_yape}}', paqueteElegido.yape_num);
             
           // Enviar la imagen y el texto en un solo mensaje
           await sock.sendMessage(from, {
