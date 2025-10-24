@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for consulta-pe-wa-bot on 2025-09-23T15:29:14Z
+# fly.toml app configuration file generated for consulta-pe-wa-bot on 2025-10-24T15:36:54Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'consulta-pe-wa-bot'
-primary_region = 'gru'
+primary_region = 'ams'
 
 [build]
 
