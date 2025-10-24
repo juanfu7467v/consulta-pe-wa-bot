@@ -5,6 +5,9 @@ import axios from "axios";
 import qrcode from "qrcode";
 import fs from "fs";
 import path from "path";
+// Importar agente HTTP/HTTPS de Node.js para mejorar la estabilidad del socket
+import { Agent as HttpAgent } from "http";
+import { Agent as HttpsAgent } from "https";
 
 dotenv.config();
 
@@ -24,7 +27,6 @@ const resetInactivityTimer = () => {
     inactivityTimer = setTimeout(() => {
         console.log(`\n😴 Contenedor inactivo por ${INACTIVITY_TIMEOUT_MS / 60000} minutos. Se detendrá el proceso de Node.js para que Fly.io lo apague y ahorre recursos.\n`);
         // Detener el proceso para que Fly.io lo apague. El webhook de WA lo despertará.
-        // Ojo: Esto es una práctica común en Fly.io para apps de este tipo.
         process.exit(0); 
     }, INACTIVITY_TIMEOUT_MS);
 };
@@ -64,7 +66,6 @@ let activeAI = process.env.DEFAULT_AI || "gemini";
 let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
 
 // Configuración de prompts, ahora inicializados con el prompt largo y mejorado
-// Asegúrate de definir estas variables en el entorno (.env) para que no estén vacías.
 let GEMINI_PROMPT = process.env.GEMINI_PROMPT || `Instrucciones maestras para el bot Consulta PE...`;
 let COHERE_PROMPT = process.env.COHERE_PROMPT || "";
 let OPENAI_PROMPT = process.env.OPENAI_PROMPT || "";
@@ -205,17 +206,21 @@ const createAndConnectSocket = async (sessionId) => {
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
+    // ******* CORRECCIÓN CRÍTICA PARA FLY.IO: Uso de un agente de conexión *******
+    // Esto ayuda a estabilizar la conexión del WebSocket en entornos de contenedores
+    // que a menudo tienen problemas de firewall o timeouts.
+    const agent = new HttpsAgent({ keepAlive: true });
+    
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
     browser: ["ConsultaPE", "Chrome", "2.0"],
     syncFullHistory: false,
-    // ******* CORRECCIÓN PARA ESTABILIDAD EN CONTENEDORES *******
-    // Se añade un tiempo de espera para que la conexión a WA sea más robusta.
     connectTimeoutMs: 30000, 
-    // Se usa un proxy o agente si es necesario, pero en la mayoría de los casos no es.
-    // En caso de problemas de "Connection Failure" en Fly.io, 
-    // podría ser necesario usar el parámetro 'proxy' o revisar el firewall de Fly.io.
+    agent: agent, // <-- Aplicamos el agente aquí
+    // Mantener la conexión activa es clave en Fly.io
+    keepAlive: true, 
+    // ******* FIN DE CORRECCIÓN CRÍTICA *******
   });
 
   sessions.set(sessionId, { sock, status: "starting", qr: null, lastMessageTimestamp: 0 });
@@ -227,7 +232,6 @@ const createAndConnectSocket = async (sessionId) => {
 
     if (qr) {
         // ******* CORRECCIÓN IMPORTANTE: Generar QR accesible *******
-        // Se genera la DataURL para que el endpoint pueda devolver el QR.
         try {
             const dataUrl = await qrcode.toDataURL(qr);
             sessions.get(sessionId).qr = dataUrl;
@@ -250,17 +254,10 @@ const createAndConnectSocket = async (sessionId) => {
       userData[sessionId] = {
           status: "connected",
           timestamp: new Date().toISOString(),
-          // Se asume que el JID del bot es su propio número si está conectado
           jid: sock.user.id 
       };
       saveUserData(userData);
       
-      // ******* MENSAJE DE BIENVENIDA TRAS CONEXIÓN *******
-      // Opcional: Enviar un mensaje para confirmar la reconexión/conexión
-      // const adminConfirmMsg = `Bot *ConsultaPE* conectado y listo para operar. Sesión: ${sessionId}`;
-      // for (const admin of ADMIN_NUMBERS) {
-      //    if (admin) await sock.sendMessage(admin, { text: adminConfirmMsg });
-      // }
     }
 
     if (connection === "close") {
@@ -401,7 +398,6 @@ const createAndConnectSocket = async (sessionId) => {
       
       // ------------------- LÓGICA DE IA (si no hubo coincidencia local/venta) -------------------
       // Aquí iría la llamada a la IA si no se ha resuelto el mensaje localmente.
-      // Ya que no tengo el código de la IA, dejo un placeholder para tu integración:
       // const aiResponse = await consumirGemini(body, from, userStates);
       // await sock.sendMessage(from, { text: aiResponse });
       await sock.sendMessage(from, { text: welcomeMessage });
@@ -440,7 +436,7 @@ app.get("/api/session/create", async (req, res) => {
     try {
         await createAndConnectSocket(sessionId);
         // Esperar un momento para la generación inicial del QR
-        await wait(1500); 
+        await wait(2000); // Aumento a 2s para dar más tiempo al socket inicial
         const s = sessions.get(sessionId);
         res.json({ 
             ok: true, 
@@ -462,8 +458,7 @@ app.get("/api/session/qr", (req, res) => {
     const s = sessions.get(sessionId);
     
     if (s.status === "qr" && s.qr) {
-        // En lugar de devolver el JSON, podemos devolver la imagen directamente si la DataURL es grande
-        // o seguir devolviendo el JSON con la DataURL para que un frontend la renderice.
+        // Devolver el JSON con la DataURL para que el frontend la renderice.
         res.json({ ok: true, qr: s.qr, status: s.status });
     } else if (s.status === "connected") {
         res.json({ ok: true, qr: null, status: "connected", message: "La sesión ya está vinculada." });
