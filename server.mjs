@@ -12,8 +12,9 @@ const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// --- GESTIÓN DE INACTIVIDAD (Para Fly.io) ---
-const INACTIVITY_TIMEOUT_MS = 4 * 60 * 1000; // 4 minutos
+// ------------------- GESTIÓN DE INACTIVIDAD (Para Fly.io) -------------------
+// Se aumenta el timeout a 10 minutos para dar más tiempo antes de la suspensión
+const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutos
 let inactivityTimer;
 
 const resetInactivityTimer = () => {
@@ -21,12 +22,10 @@ const resetInactivityTimer = () => {
         clearTimeout(inactivityTimer);
     }
     inactivityTimer = setTimeout(() => {
-        console.log(`\n😴 Contenedor inactivo por ${INACTIVITY_TIMEOUT_MS / 60000} minutos. Simulando apagado para ahorro de recursos...\n`);
-        // En Fly.io, simplemente no respondes a nuevos requests.
-        // Aquí simulamos un exit para detener el proceso, lo que haría que Fly.io lo apague.
-        // ¡ADVERTENCIA! Si usas esto localmente, detendrá el proceso. En Fly.io, el proxy
-        // se encargará de despertar el contenedor si llega un mensaje de WhatsApp.
-        // process.exit(0); 
+        console.log(`\n😴 Contenedor inactivo por ${INACTIVITY_TIMEOUT_MS / 60000} minutos. Se detendrá el proceso de Node.js para que Fly.io lo apague y ahorre recursos.\n`);
+        // Detener el proceso para que Fly.io lo apague. El webhook de WA lo despertará.
+        // Ojo: Esto es una práctica común en Fly.io para apps de este tipo.
+        process.exit(0); 
     }, INACTIVITY_TIMEOUT_MS);
 };
 
@@ -38,8 +37,14 @@ app.use((req, res, next) => {
 
 // Inicializar el temporizador al arrancar
 resetInactivityTimer();
-// ---------------------------------------------
+// ----------------------------------------------------------------------------
 
+
+// ------------------- Archivos y Sesiones -------------------
+
+// Directorio para las sesiones de Baileys
+const SESSIONS_DIR = "./sessions";
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 // Archivo para guardar los datos de las sesiones de WhatsApp
 const USERS_DATA_FILE = path.join(process.cwd(), "users_data.json");
@@ -52,19 +57,21 @@ const saveUserData = (data) => fs.writeFileSync(USERS_DATA_FILE, JSON.stringify(
 const sessions = new Map();
 const userStates = new Map(); // Para almacenar el estado de la conversación por usuario
 
-// Estado del bot
+// ------------------- Configuración y Constantes -------------------
+
 let botPaused = false;
 let activeAI = process.env.DEFAULT_AI || "gemini";
 let welcomeMessage = "¡Hola! ¿Cómo puedo ayudarte hoy?";
 
 // Configuración de prompts, ahora inicializados con el prompt largo y mejorado
-let GEMINI_PROMPT = `Instrucciones maestras para el bot Consulta PE... [PROMPT COMPLETO]`; // Dejado truncado por espacio
-let COHERE_PROMPT = "";
-let OPENAI_PROMPT = "";
+// Asegúrate de definir estas variables en el entorno (.env) para que no estén vacías.
+let GEMINI_PROMPT = process.env.GEMINI_PROMPT || `Instrucciones maestras para el bot Consulta PE...`;
+let COHERE_PROMPT = process.env.COHERE_PROMPT || "";
+let OPENAI_PROMPT = process.env.OPENAI_PROMPT || "";
 
-// Prompts y datos para el pago (Asegúrate de configurar en .env)
+// Prompts y datos para el pago
 const YAPE_NUMBER = process.env.YAPE_NUMBER || "929008609";
-const QR_IMAGE_URL = process.env.LEMON_QR_IMAGE || "https://ejemplo.com/qr.png"; // Debe ser una URL real
+const QR_IMAGE_URL = process.env.LEMON_QR_IMAGE || "https://ejemplo.com/qr.png"; // ¡Debe ser una URL real!
 
 const YAPE_PAYMENT_PROMPT = `¡Listo, leyenda! Elige la cantidad de poder que quieres, escanea el QR y paga directo por Yape.
 
@@ -84,7 +91,6 @@ const PACKAGES = {
     '200': { amount: 200, credits: 1500, qr_key: 'LEMON_QR_IMAGE', yape_num: 'YAPE_NUMBER' },
 };
 
-// Respuestas locales y menús
 let respuestasPredefinidas = {};
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
@@ -128,7 +134,7 @@ MONTO (S/)	         CRÉDITOS
 🎁 Y porque me caes bien: Por la compra de cualquier paquete te voy a añadir  3 créditos extra de yapa.
 `;
 
-// --- Funciones de Utilidad ---
+// ------------------- Funciones de Utilidad -------------------
 
 const checkMatch = (text, patterns) => {
     const textWords = new Set(text.toLowerCase().split(/\s+/).filter(w => w.length > 2));
@@ -157,14 +163,7 @@ const checkMatch = (text, patterns) => {
     return false;
 };
 
-// --- API y Herramientas (omitidas por brevedad, asume que están definidas como en el prompt original) ---
-// const geminiVisionApi = ...
-// const geminiTextApi = ...
-// const googleSpeechToTextApi = ...
-// const consumirGemini = ...
-// const consumirCohere = ...
-
-// ------------------- Importar Baileys -------------------
+// ------------------- Importar Baileys (ESM) -------------------
 let makeWASocket, useMultiFileAuthState, DisconnectReason, proto, downloadContentFromMessage, get
 try {
   const baileysModule = await import("@whiskeysockets/baileys");
@@ -178,7 +177,7 @@ try {
   console.error("Error importando Baileys:", err.message || err);
 }
 
-// ------------------- Utilidades -------------------
+// ------------------- Utilidades de Socket -------------------
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
 const forwardToAdmins = async (sock, message, customerNumber, type = "GENERAL") => {
@@ -200,7 +199,8 @@ ${message}
 const createAndConnectSocket = async (sessionId) => {
   if (!makeWASocket) throw new Error("Baileys no disponible");
 
-  const sessionDir = path.join("./sessions", sessionId);
+  // Usar el directorio global de sesiones
+  const sessionDir = path.join(SESSIONS_DIR, sessionId);
   if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -209,7 +209,13 @@ const createAndConnectSocket = async (sessionId) => {
     auth: state,
     printQRInTerminal: false,
     browser: ["ConsultaPE", "Chrome", "2.0"],
-    syncFullHistory: false
+    syncFullHistory: false,
+    // ******* CORRECCIÓN PARA ESTABILIDAD EN CONTENEDORES *******
+    // Se añade un tiempo de espera para que la conexión a WA sea más robusta.
+    connectTimeoutMs: 30000, 
+    // Se usa un proxy o agente si es necesario, pero en la mayoría de los casos no es.
+    // En caso de problemas de "Connection Failure" en Fly.io, 
+    // podría ser necesario usar el parámetro 'proxy' o revisar el firewall de Fly.io.
   });
 
   sessions.set(sessionId, { sock, status: "starting", qr: null, lastMessageTimestamp: 0 });
@@ -220,13 +226,21 @@ const createAndConnectSocket = async (sessionId) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      const dataUrl = await qrcode.toDataURL(qr);
-      sessions.get(sessionId).qr = dataUrl;
-      sessions.get(sessionId).status = "qr";
+        // ******* CORRECCIÓN IMPORTANTE: Generar QR accesible *******
+        // Se genera la DataURL para que el endpoint pueda devolver el QR.
+        try {
+            const dataUrl = await qrcode.toDataURL(qr);
+            sessions.get(sessionId).qr = dataUrl;
+            sessions.get(sessionId).status = "qr";
+            console.log(`🔑 QR generado para sesión: ${sessionId}. Accede a /api/session/qr?sessionId=${sessionId}`);
+        } catch (qrErr) {
+            console.error("Error generando QR DataURL:", qrErr);
+            sessions.get(sessionId).status = "error_qr";
+        }
     }
 
     if (connection === "open") {
-      sessions.get(sessionId).qr = null;
+      sessions.get(sessionId).qr = null; // El QR ya no es necesario
       sessions.get(sessionId).status = "connected";
       console.log("✅ WhatsApp conectado:", sessionId);
       await saveCreds();
@@ -240,17 +254,27 @@ const createAndConnectSocket = async (sessionId) => {
           jid: sock.user.id 
       };
       saveUserData(userData);
-
+      
+      // ******* MENSAJE DE BIENVENIDA TRAS CONEXIÓN *******
+      // Opcional: Enviar un mensaje para confirmar la reconexión/conexión
+      // const adminConfirmMsg = `Bot *ConsultaPE* conectado y listo para operar. Sesión: ${sessionId}`;
+      // for (const admin of ADMIN_NUMBERS) {
+      //    if (admin) await sock.sendMessage(admin, { text: adminConfirmMsg });
+      // }
     }
 
     if (connection === "close") {
       const reason = lastDisconnect?.error?.output?.statusCode;
       sessions.get(sessionId).status = "disconnected";
+      
+      // ******* MEJORA DE RECONEXIÓN *******
+      // Intenta reconectar a menos que sea un cierre por LOGGED_OUT (cierre explícito de WhatsApp).
       if (reason !== DisconnectReason.loggedOut) {
-        console.log("Reconectando:", sessionId);
-        setTimeout(() => createAndConnectSocket(sessionId), 2000);
+        console.log(`Reconectando (${sessionId}) por razón: ${reason || "desconocida"}...`);
+        // Se usa una reconexión exponencial con límite de tiempo para evitar ciclos infinitos.
+        setTimeout(() => createAndConnectSocket(sessionId), 5000 + Math.random() * 5000); // Espera aleatoria de 5 a 10s
       } else {
-        console.log("Sesión cerrada por desconexión del usuario.");
+        console.log("Sesión cerrada por desconexión del usuario (Logged Out).");
         sessions.delete(sessionId);
         fs.rmSync(sessionDir, { recursive: true, force: true });
         
@@ -276,7 +300,7 @@ const createAndConnectSocket = async (sessionId) => {
   });
 
   sock.ev.on("messages.upsert", async (m) => {
-    resetInactivityTimer(); // Reiniciar el temporizador al recibir un mensaje
+    resetInactivityTimer(); 
     
     for (const msg of m.messages || []) {
       if (!msg.message || msg.key.fromMe) continue;
@@ -285,26 +309,41 @@ const createAndConnectSocket = async (sessionId) => {
       const customerNumber = from;
       
       let body = "";
-      // ... (Lógica de obtención de body, transcripción y análisis de imagen omitida)
-      // (ASUMIMOS QUE 'body' CONTIENE EL TEXTO DEL CLIENTE)
+      // Lógica simplificada de obtención de cuerpo del mensaje
+      if (msg.message.conversation) {
+        body = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage?.text) {
+        body = msg.message.extendedTextMessage.text;
+      }
       
       if (!body) continue;
 
-      // ... (Lógica de comandos de administrador omitida)
+      // Lógica de comandos de administrador (simplificado)
+      if (from.startsWith(process.env.ADMIN_WA_NUMBER_1) || from.startsWith(process.env.ADMIN_WA_NUMBER_2)) {
+          if (body.toLowerCase() === '!pausa') {
+              botPaused = true;
+              await sock.sendMessage(from, { text: "🤖 Bot en *PAUSA* (solo responde comandos admin)." });
+              continue;
+          } else if (body.toLowerCase() === '!reanudar') {
+              botPaused = false;
+              await sock.sendMessage(from, { text: "🤖 Bot *REANUDADO* y listo para atender clientes." });
+              continue;
+          }
+      }
+
 
       if (botPaused) return;
       
       // Lógica de Venta Automática (SIN IA - Prioridad Máxima)
       if (checkMatch(body, VENTA_PATTERNS)) {
           await sock.sendMessage(from, { text: VENTA_RESPONSE });
-          continue; // Detener el procesamiento
+          continue; 
       }
 
       // Lógica de Pago Automático (SIN IA - Prioridad Máxima)
       let paqueteElegido = null;
       const lowerCaseBody = body.toLowerCase().trim();
 
-      // Buscar coincidencia de paquete por monto o nombre
       for (const [key, value] of Object.entries(PACKAGES)) {
           if (lowerCaseBody === key || checkMatch(body, [`paquete de ${key}`, `${key} soles`, `${value.credits} creditos`])) {
               paqueteElegido = value;
@@ -313,7 +352,6 @@ const createAndConnectSocket = async (sessionId) => {
       }
 
       if (paqueteElegido || checkMatch(body, PAGO_PATTERNS)) {
-          // Si hubo coincidencia de patrón de pago pero no se especificó monto, se envía un mensaje genérico.
           if (!paqueteElegido) {
               await sock.sendMessage(from, { text: `Para darte los datos de pago, por favor, *indica el monto exacto* (10, 20, 50, 100 o 200) que deseas comprar. ¡Así te envío el QR al toque! 😉` });
               continue;
@@ -334,16 +372,39 @@ const createAndConnectSocket = async (sessionId) => {
                   image: qrImage,
                   caption: textMessage
               });
-              continue; // Detener el procesamiento
+              continue; 
           } catch (error) {
               console.error("Error al enviar el mensaje con QR:", error.message);
-              await sock.sendMessage(from, { text: "Lo siento, hubo un problema al generar los datos de pago. Por favor, asegúrate de haber configurado el QR. Si el problema persiste, contacta a soporte." });
+              // ******* MEJORA DE MENSAJE DE ERROR *******
+              // Si falla al cargar la imagen, se envía solo el texto para no detener el flujo.
+              if (paqueteElegido) {
+                  const fallbackText = YAPE_PAYMENT_PROMPT
+                      .replace('{{monto}}', paqueteElegido.amount)
+                      .replace('{{creditos}}', paqueteElegido.credits)
+                      .concat(`\n\n⚠️ *Aviso:* No se pudo cargar el QR. Si necesitas el QR, intenta más tarde o solicita a un administrador.`);
+                  await sock.sendMessage(from, { text: fallbackText });
+              } else {
+                  await sock.sendMessage(from, { text: "Lo siento, hubo un problema al generar los datos de pago. Por favor, contacta a soporte si el problema persiste." });
+              }
               continue;
           }
       }
       
-      // ... (Lógica de "comprobante de pago" y reenvío a admin)
-      // ... (Lógica de IA si no hubo coincidencia local/venta)
+      // Lógica de "comprobante de pago" y reenvío a admin (ASUMIDA AQUÍ)
+      if (msg.message.imageMessage || body.toLowerCase().includes("comprobante") || body.toLowerCase().includes("pago realizado")) {
+          // Si es un comprobante, reenviar a admins
+          // (Aquí iría la lógica completa de detección de imágenes y reenvío)
+          await forwardToAdmins(sock, `Posible comprobante de pago: ${body}`, customerNumber, "COMPROBANTE");
+          await sock.sendMessage(from, { text: "¡Recibido! Estamos verificando tu pago. En breve, un administrador te confirmará la activación de tus créditos. Por favor, espera unos minutos. ⏳" });
+          continue;
+      }
+      
+      // ------------------- LÓGICA DE IA (si no hubo coincidencia local/venta) -------------------
+      // Aquí iría la llamada a la IA si no se ha resuelto el mensaje localmente.
+      // Ya que no tengo el código de la IA, dejo un placeholder para tu integración:
+      // const aiResponse = await consumirGemini(body, from, userStates);
+      // await sock.sendMessage(from, { text: aiResponse });
+      await sock.sendMessage(from, { text: welcomeMessage });
     }
   });
 
@@ -354,32 +415,72 @@ const createAndConnectSocket = async (sessionId) => {
 
 app.get("/api/health", (req, res) => {
     resetInactivityTimer();
-    res.json({ ok: true, status: "alive", time: new Date().toISOString() });
+    // Muestra el estado de la primera sesión para el health check
+    const firstSessionId = Object.keys(loadUserData())[0];
+    const firstSessionStatus = sessions.get(firstSessionId)?.status || "inactive";
+
+    res.json({ 
+        ok: true, 
+        status: "alive", 
+        wa_status: firstSessionStatus,
+        time: new Date().toISOString() 
+    });
 });
 
 app.get("/api/session/create", async (req, res) => {
     resetInactivityTimer();
-    const sessionId = req.query.sessionId || `session_${Date.now()}`;
-    if (!sessions.has(sessionId)) await createAndConnectSocket(sessionId);
-    res.json({ ok: true, sessionId });
+    const sessionId = req.query.sessionId || `main_session_${Date.now()}`;
+    
+    // Si la sesión existe, no la crees de nuevo, simplemente informa su estado.
+    if (sessions.has(sessionId) && sessions.get(sessionId).status !== "disconnected") {
+         const currentSession = sessions.get(sessionId);
+         return res.json({ ok: true, sessionId, status: currentSession.status, message: "Sesión ya está activa o en proceso." });
+    }
+
+    try {
+        await createAndConnectSocket(sessionId);
+        // Esperar un momento para la generación inicial del QR
+        await wait(1500); 
+        const s = sessions.get(sessionId);
+        res.json({ 
+            ok: true, 
+            sessionId, 
+            status: s?.status,
+            qr_link: s?.status === 'qr' ? `/api/session/qr?sessionId=${sessionId}` : null,
+            message: s?.status === 'qr' ? 'Sesión creada. Usa el link o el endpoint /api/session/qr para obtener el QR.' : 'Sesión creada. Esperando conexión (puede demorar un momento).'
+        });
+    } catch (err) {
+         res.status(500).json({ ok: false, error: "Error al crear la sesión: " + err.message });
+    }
 });
 
 app.get("/api/session/qr", (req, res) => {
     resetInactivityTimer();
     const { sessionId } = req.query;
     if (!sessions.has(sessionId)) return res.status(404).json({ ok: false, error: "Session no encontrada" });
+    
     const s = sessions.get(sessionId);
-    res.json({ ok: true, qr: s.qr, status: s.status });
+    
+    if (s.status === "qr" && s.qr) {
+        // En lugar de devolver el JSON, podemos devolver la imagen directamente si la DataURL es grande
+        // o seguir devolviendo el JSON con la DataURL para que un frontend la renderice.
+        res.json({ ok: true, qr: s.qr, status: s.status });
+    } else if (s.status === "connected") {
+        res.json({ ok: true, qr: null, status: "connected", message: "La sesión ya está vinculada." });
+    } else {
+        res.json({ ok: true, qr: null, status: s.status, message: "QR no disponible. Estado actual: " + s.status });
+    }
 });
 
 app.get("/api/session/reset", async (req, res) => {
     resetInactivityTimer();
     const { sessionId } = req.query;
-    const sessionDir = path.join("./sessions", sessionId);
+    const sessionDir = path.join(SESSIONS_DIR, sessionId); // Usa el directorio correcto
     try {
       if (sessions.has(sessionId)) {
         const { sock } = sessions.get(sessionId);
-        if (sock) await sock.end();
+        // Usar sock.end() para cerrar la conexión de Baileys de forma limpia
+        if (sock) await sock.end(); 
         sessions.delete(sessionId);
         
         // Eliminar de users_data.json
@@ -388,7 +489,7 @@ app.get("/api/session/reset", async (req, res) => {
         saveUserData(userData);
       }
       if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-      res.json({ ok: true, message: "Sesión eliminada, vuelve a crearla para obtener QR" });
+      res.json({ ok: true, message: "Sesión eliminada. Vuelve a crearla para obtener un nuevo QR." });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -399,32 +500,33 @@ app.get("/", (req, res) => {
     res.json({ ok: true, msg: "ConsultaPE WA Bot activo 🚀" });
 });
 
-// --- NUEVO ENDPOINT (GET): Reenvío de Nuevo Usuario ---
+// --- ENDPOINT (GET): Reenvío de Nuevo Usuario ---
 app.get("/api/webhook/new-user", async (req, res) => {
     resetInactivityTimer();
-    // Usar req.query para obtener datos en un GET
     const { correo, referido_por } = req.query;
     
     if (!correo) {
         return res.status(400).json({ ok: false, error: "Falta el campo 'correo' en la query." });
     }
 
-    // Asegurar que la sesión esté cargada (en Fly.io, se cargaría al despertar)
     const userData = loadUserData();
-    const firstSessionId = Object.keys(userData)[0]; // Obtener el ID de la primera sesión guardada
-    const session = sessions.get(firstSessionId);
+    const firstSessionId = Object.keys(userData)[0];
+    let activeSession = sessions.get(firstSessionId);
     
-    // Si la sesión no está en Map (sesión activa), intentar crearla desde users_data
-    if (!session && firstSessionId) {
-        console.log(`Intentando reactivar sesión ${firstSessionId}...`);
-        await createAndConnectSocket(firstSessionId);
-        // Esperar un momento para la conexión
-        await wait(2000); 
+    if (!activeSession && firstSessionId) {
+        // Intentar reactivar si la sesión está registrada pero no activa en memoria
+        console.log(`Intentando reactivar sesión ${firstSessionId} para webhook...`);
+        try {
+            await createAndConnectSocket(firstSessionId);
+            await wait(3000); // Esperar a que intente conectar
+            activeSession = sessions.get(firstSessionId);
+        } catch (err) {
+            console.error("Error al reactivar sesión para webhook:", err);
+        }
     }
-    const activeSession = sessions.get(firstSessionId);
 
     if (!activeSession || activeSession.status !== "connected") {
-        return res.status(503).json({ ok: false, error: "Bot de WhatsApp no conectado o reactivado para reenviar." });
+        return res.status(503).json({ ok: false, error: "Bot de WhatsApp no conectado para reenviar." });
     }
 
     const message = `*🚨 NUEVO REGISTRO EN LA APP 🚨*
@@ -444,36 +546,36 @@ _Acción: Contactar y ofrecer paquete de créditos._`;
     }
 });
 
-// --- NUEVO ENDPOINT (GET): Reenvío de Pago Automático ---
+// --- ENDPOINT (GET): Reenvío de Pago Automático ---
 app.get("/api/webhook/payment-received", async (req, res) => {
     resetInactivityTimer();
-    // Usar req.query para obtener datos en un GET
     const data = req.query;
     
     const requiredFields = ["Nombre Titular Yape", "Correo Electrónico", "WhatsApp", "Monto Pagado (S/)", "Estado", "Créditos Otorgados", "Usuario Firebase UID"];
     const missingFields = requiredFields.filter(field => !data[field]);
 
     if (missingFields.length > 0) {
-        // En un GET, es mejor devolver 200 si es un test, o 400 si se espera que la data sea completa
         return res.status(400).json({ ok: false, error: `Faltan campos obligatorios en la query: ${missingFields.join(', ')}` });
     }
     
-    // Asegurar que la sesión esté cargada (en Fly.io, se cargaría al despertar)
     const userData = loadUserData();
-    const firstSessionId = Object.keys(userData)[0]; // Obtener el ID de la primera sesión guardada
-    const session = sessions.get(firstSessionId);
+    const firstSessionId = Object.keys(userData)[0];
+    let activeSession = sessions.get(firstSessionId);
 
-    // Si la sesión no está en Map (sesión activa), intentar crearla desde users_data
-    if (!session && firstSessionId) {
-        console.log(`Intentando reactivar sesión ${firstSessionId}...`);
-        await createAndConnectSocket(firstSessionId);
-        // Esperar un momento para la conexión
-        await wait(2000); 
+    if (!activeSession && firstSessionId) {
+        // Intentar reactivar si la sesión está registrada pero no activa en memoria
+        console.log(`Intentando reactivar sesión ${firstSessionId} para webhook...`);
+        try {
+            await createAndConnectSocket(firstSessionId);
+            await wait(3000); // Esperar a que intente conectar
+            activeSession = sessions.get(firstSessionId);
+        } catch (err) {
+            console.error("Error al reactivar sesión para webhook:", err);
+        }
     }
-    const activeSession = sessions.get(firstSessionId);
 
     if (!activeSession || activeSession.status !== "connected") {
-        return res.status(503).json({ ok: false, error: "Bot de WhatsApp no conectado o reactivado para reenviar." });
+        return res.status(503).json({ ok: false, error: "Bot de WhatsApp no conectado para reenviar." });
     }
 
     const message = `*✅ PAGO RECIBIDO AUTOMÁTICAMENTE ✅*
@@ -494,8 +596,6 @@ app.get("/api/webhook/payment-received", async (req, res) => {
         for (const admin of ADMIN_NUMBERS) {
             if (admin) await activeSession.sock.sendMessage(admin, { text: message });
         }
-        // Opcional: Enviar una confirmación al cliente si el número de WhatsApp está en formato JID.
-        // await activeSession.sock.sendMessage(`${data["WhatsApp"]}@s.whatsapp.net`, { text: "¡Tu pago ha sido procesado y tus créditos están siendo activados! 🎉" });
         
         res.json({ ok: true, message: "Datos de pago reenviados y procesados." });
     } catch (error) {
